@@ -9,6 +9,7 @@ inventory.db
 runs/
 *.log
 .DS_Store
+.claude/settings.local.json
 node_modules/
 .next/
 dist/
