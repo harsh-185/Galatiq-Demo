@@ -58,6 +58,41 @@ _DDL = [
         PRIMARY KEY (invoice_number, vendor)
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS approval_policies (
+        policy_id     TEXT PRIMARY KEY,
+        min_usd       NUMERIC NOT NULL,
+        max_usd       NUMERIC,
+        approver_role TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS approval_log (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        invoice_number TEXT NOT NULL,
+        vendor         TEXT NOT NULL,
+        status         TEXT NOT NULL,
+        approver_role  TEXT NOT NULL,
+        policy_id      TEXT,
+        total_usd      NUMERIC NOT NULL,
+        decided_at     TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS payment_log (
+        reference      TEXT PRIMARY KEY,
+        invoice_number TEXT NOT NULL,
+        vendor         TEXT NOT NULL,
+        rail           TEXT NOT NULL,
+        status         TEXT NOT NULL,
+        amount_usd     NUMERIC NOT NULL,
+        currency_paid  TEXT NOT NULL,
+        amount_paid    NUMERIC NOT NULL,
+        scheduled_for  TEXT,
+        receipt_path   TEXT,
+        recorded_at    TEXT NOT NULL
+    )
+    """,
 ]
 
 SEED_INVENTORY: list[dict[str, Any]] = [
@@ -69,6 +104,14 @@ SEED_INVENTORY: list[dict[str, Any]] = [
     {"item": "BoltPack", "stock": 500, "unit_price": "5.00",   "category": "hardware",    "status": STATUS_ACTIVE},
     {"item": "LaserCutterPro", "stock": 3, "unit_price": "25000.00", "category": "equipment", "status": STATUS_ACTIVE},
 ]
+
+SEED_APPROVAL_POLICIES: list[dict[str, Any]] = [
+    {"policy_id": "TIER-AUTO", "min_usd": "0",      "max_usd": "1000",   "approver_role": "system"},
+    {"policy_id": "TIER-MGR",  "min_usd": "1000",   "max_usd": "10000",  "approver_role": "manager"},
+    {"policy_id": "TIER-DIR",  "min_usd": "10000",  "max_usd": "50000",  "approver_role": "director"},
+    {"policy_id": "TIER-CFO",  "min_usd": "50000",  "max_usd": None,     "approver_role": "cfo"},
+]
+
 
 SEED_VENDORS: list[dict[str, Any]] = [
     {
@@ -123,6 +166,14 @@ class Vendor:
     address: str | None
     status: str
     default_currency: str | None
+
+
+@dataclass(frozen=True)
+class ApprovalPolicy:
+    policy_id: str
+    min_usd: Decimal
+    max_usd: Decimal | None  # None = no upper bound
+    approver_role: str
 
 
 def connect(path: str | Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
@@ -182,9 +233,31 @@ def seed_vendors(
     return cur.rowcount
 
 
+def seed_approval_policies(
+    conn: sqlite3.Connection,
+    rows: Iterable[dict[str, Any]] | None = None,
+) -> int:
+    payload = [
+        (
+            r["policy_id"],
+            r["min_usd"],
+            r.get("max_usd"),
+            r["approver_role"],
+        )
+        for r in (rows if rows is not None else SEED_APPROVAL_POLICIES)
+    ]
+    cur = conn.executemany(
+        "INSERT OR IGNORE INTO approval_policies(policy_id, min_usd, max_usd, approver_role) "
+        "VALUES (?,?,?,?)",
+        payload,
+    )
+    conn.commit()
+    return cur.rowcount
+
+
 def seed_defaults(conn: sqlite3.Connection) -> int:
-    """Seed both inventory and vendor reference data. Returns total rows inserted."""
-    return seed_inventory(conn) + seed_vendors(conn)
+    """Seed inventory, vendor, and approval-policy reference data. Returns total rows inserted."""
+    return seed_inventory(conn) + seed_vendors(conn) + seed_approval_policies(conn)
 
 
 def lookup_item(conn: sqlite3.Connection, name: str) -> InventoryItem | None:
@@ -295,6 +368,117 @@ def list_vendors(conn: sqlite3.Connection) -> list[Vendor]:
         "SELECT vendor_id, name, aliases, address, status, default_currency FROM vendors ORDER BY name"
     ).fetchall()
     return [_vendor_from_row(r) for r in rows]
+
+
+def _policy_from_row(row: sqlite3.Row) -> ApprovalPolicy:
+    return ApprovalPolicy(
+        policy_id=row["policy_id"],
+        min_usd=Decimal(str(row["min_usd"])),
+        max_usd=Decimal(str(row["max_usd"])) if row["max_usd"] is not None else None,
+        approver_role=row["approver_role"],
+    )
+
+
+def lookup_policy(conn: sqlite3.Connection, total_usd: Decimal) -> ApprovalPolicy | None:
+    """Return the policy whose [min_usd, max_usd) band contains ``total_usd``."""
+    amount = Decimal(total_usd)
+    rows = conn.execute(
+        "SELECT policy_id, min_usd, max_usd, approver_role FROM approval_policies "
+        "ORDER BY min_usd"
+    ).fetchall()
+    for r in rows:
+        policy = _policy_from_row(r)
+        if amount < policy.min_usd:
+            continue
+        if policy.max_usd is None or amount < policy.max_usd:
+            return policy
+    return None
+
+
+def list_policies(conn: sqlite3.Connection) -> list[ApprovalPolicy]:
+    rows = conn.execute(
+        "SELECT policy_id, min_usd, max_usd, approver_role FROM approval_policies ORDER BY min_usd"
+    ).fetchall()
+    return [_policy_from_row(r) for r in rows]
+
+
+def record_approval(
+    conn: sqlite3.Connection,
+    *,
+    invoice_number: str,
+    vendor: str,
+    status: str,
+    approver_role: str,
+    policy_id: str | None,
+    total_usd: Decimal,
+) -> None:
+    conn.execute(
+        "INSERT INTO approval_log(invoice_number, vendor, status, approver_role, policy_id, total_usd, decided_at) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (
+            invoice_number,
+            vendor,
+            status,
+            approver_role,
+            policy_id,
+            str(total_usd),
+            datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        ),
+    )
+    conn.commit()
+
+
+def record_payment(
+    conn: sqlite3.Connection,
+    *,
+    reference: str,
+    invoice_number: str,
+    vendor: str,
+    rail: str,
+    status: str,
+    amount_usd: Decimal,
+    currency_paid: str,
+    amount_paid: Decimal,
+    scheduled_for: str | None,
+    receipt_path: str | None,
+) -> None:
+    conn.execute(
+        "INSERT OR REPLACE INTO payment_log("
+        "reference, invoice_number, vendor, rail, status, amount_usd, currency_paid, "
+        "amount_paid, scheduled_for, receipt_path, recorded_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            reference,
+            invoice_number,
+            vendor,
+            rail,
+            status,
+            str(amount_usd),
+            currency_paid,
+            str(amount_paid),
+            scheduled_for,
+            receipt_path,
+            datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        ),
+    )
+    conn.commit()
+
+
+def list_approvals(conn: sqlite3.Connection, *, limit: int = 50) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT id, invoice_number, vendor, status, approver_role, policy_id, total_usd, decided_at "
+        "FROM approval_log ORDER BY id DESC LIMIT ?",
+        (int(limit),),
+    ).fetchall()
+
+
+def list_payments(conn: sqlite3.Connection, *, limit: int = 50) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT reference, invoice_number, vendor, rail, status, amount_usd, currency_paid, "
+        "amount_paid, scheduled_for, receipt_path, recorded_at "
+        "FROM payment_log ORDER BY recorded_at DESC LIMIT ?",
+        (int(limit),),
+    ).fetchall()
 
 
 def init_db(path: str | Path = DEFAULT_DB_PATH, *, fresh: bool = True) -> Path:

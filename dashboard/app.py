@@ -24,7 +24,9 @@ from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv(REPO_ROOT / ".env")
 
+from galatiq.agents.approval import approve  # noqa: E402
 from galatiq.agents.ingestion import ingest  # noqa: E402
+from galatiq.agents.pipeline import run_pipeline  # noqa: E402
 from galatiq.agents.validation import validate  # noqa: E402
 from galatiq.db import (  # noqa: E402
     DEFAULT_DB_PATH,
@@ -37,6 +39,7 @@ from galatiq.db import (  # noqa: E402
     has_invoice,
     init_db,
     list_inventory,
+    list_policies,
     list_vendors,
     lookup_item,
     lookup_vendor,
@@ -71,9 +74,9 @@ def _resolve_selection() -> Path | None:
         st.markdown(
             "**Phases**\n\n"
             "1. Ingestion ✅\n"
-            "2. Validation 🚧\n"
-            "3. Approval 🚧\n"
-            "4. Payment 🚧"
+            "2. Validation ✅\n"
+            "3. Approval ✅\n"
+            "4. Payment ✅"
         )
         st.divider()
         st.markdown("**Reference DB**")
@@ -326,11 +329,6 @@ def _render_db_lookup_panel(inv) -> None:
             st.info("No line items to look up.")
 
 
-def _render_stub(name: str, description: str) -> None:
-    st.subheader(f"{name} phase")
-    st.info(f"🚧 Not implemented yet. {description}")
-
-
 _VERDICT_BADGE = {
     "pass": ("✅ PASS", "success"),
     "needs_review": ("⚠️ NEEDS REVIEW", "warning"),
@@ -396,6 +394,134 @@ def _render_validation(path: Path) -> None:
             )
 
 
+_APPROVAL_BADGE = {
+    "auto_approved": ("✅ AUTO APPROVED", "success"),
+    "pending_human": ("⏳ PENDING HUMAN", "warning"),
+    "rejected": ("❌ REJECTED", "error"),
+}
+
+_PAYMENT_BADGE = {
+    "scheduled": ("✅ SCHEDULED", "success"),
+    "skipped": ("⏭ SKIPPED", "warning"),
+    "failed": ("❌ FAILED", "error"),
+}
+
+
+def _render_approval(path: Path) -> None:
+    st.subheader("Approval decision")
+    if not DB_PATH.exists():
+        st.warning("Reference DB not initialized. Use the sidebar button.")
+        return
+    try:
+        ing = ingest(path, allow_llm=True)
+    except Exception as e:  # noqa: BLE001
+        st.error(f"Ingestion failed before approval could run: {type(e).__name__}: {e}")
+        return
+    invoice = ing.invoice
+    with connect(DB_PATH) as conn:
+        report = validate(invoice, conn=conn)
+        decision = approve(invoice, report, conn=conn)
+
+    label, kind = _APPROVAL_BADGE[decision.status]
+    {"success": st.success, "warning": st.warning, "error": st.error}[kind](
+        f"**Decision:** {label} — {decision.justification}"
+    )
+    cols = st.columns(4)
+    cols[0].metric("Total (USD)", str(decision.total_usd))
+    cols[1].metric("Approver role", decision.approver_role)
+    cols[2].metric("Policy", decision.policy_id or "—")
+    cols[3].metric("Verdict", report.verdict)
+
+    with connect(DB_PATH) as conn:
+        policies = list_policies(conn)
+    st.markdown("**Policy bands**")
+    st.dataframe(
+        pd.DataFrame(
+            [
+                {
+                    "policy_id": p.policy_id,
+                    "min_usd": str(p.min_usd),
+                    "max_usd": str(p.max_usd) if p.max_usd is not None else "∞",
+                    "approver_role": p.approver_role,
+                    "match": "← here" if p.policy_id == decision.policy_id else "",
+                }
+                for p in policies
+            ]
+        ),
+        hide_index=True,
+        width="stretch",
+    )
+
+    if decision.escalations:
+        st.markdown("**Escalations**")
+        for code in decision.escalations:
+            st.warning(f"`{code}`")
+
+    if decision.status == "pending_human":
+        st.caption(
+            f"In a production system this is where {decision.approver_role!r} would receive a "
+            "review task. Wiring that approval workflow is future work."
+        )
+
+
+def _render_payment(path: Path) -> None:
+    st.subheader("Payment")
+    if not DB_PATH.exists():
+        st.warning("Reference DB not initialized. Use the sidebar button.")
+        return
+
+    receipt_dir = REPO_ROOT / "data" / "receipts"
+    try:
+        state = run_pipeline(path, db_path=DB_PATH, receipt_dir=receipt_dir)
+    except Exception as e:  # noqa: BLE001
+        st.error(f"Pipeline failed: {type(e).__name__}: {e}")
+        return
+
+    if state.get("errors"):
+        for err in state["errors"]:
+            st.error(err)
+        return
+
+    record = state["payment"]
+    decision = state["decision"]
+
+    label, kind = _PAYMENT_BADGE[record.status]
+    {"success": st.success, "warning": st.warning, "error": st.error}[kind](
+        f"**Payment:** {label} — rail `{record.rail}`"
+    )
+    cols = st.columns(4)
+    cols[0].metric("Reference", record.reference)
+    cols[1].metric("Rail", record.rail)
+    cols[2].metric(
+        "Amount", f"{record.amount_paid} {record.currency_paid}"
+    )
+    cols[3].metric("Scheduled", str(record.scheduled_for) if record.scheduled_for else "—")
+
+    if record.notes:
+        st.markdown("**Notes**")
+        for n in record.notes:
+            st.info(n)
+
+    body = state.get("receipt_body")
+    if record.status == "scheduled" and body:
+        st.markdown("**Receipt artifact**")
+        st.code(body, language="text")
+        st.caption(f"Written to `{record.receipt_path}`")
+        st.download_button(
+            "Download receipt",
+            data=body,
+            file_name=f"{record.reference}.txt",
+            mime="text/plain",
+        )
+    elif record.status == "skipped":
+        st.info(
+            f"Payment was skipped because the approval decision was `{decision.status}`. "
+            "Resolve approval before retrying."
+        )
+    elif record.status == "failed":
+        st.error("Payment failed — see notes above.")
+
+
 def main() -> None:
     path = _resolve_selection()
     if path is None:
@@ -423,15 +549,9 @@ def main() -> None:
     with validation_tab:
         _render_validation(path)
     with approval_tab:
-        _render_stub(
-            "Approval",
-            "Will route to the right approver based on amount thresholds and vendor.",
-        )
+        _render_approval(path)
     with payment_tab:
-        _render_stub(
-            "Payment",
-            "Will schedule the payment via the configured rail and emit a receipt.",
-        )
+        _render_payment(path)
     with db_tab:
         _render_reference_db()
 
