@@ -9,6 +9,7 @@ import typer
 from dotenv import load_dotenv
 
 from galatiq.agents.ingestion import ingest
+from galatiq.agents.validation import validate
 from galatiq.db import (
     DEFAULT_DB_PATH,
     SEED_INVENTORY,
@@ -17,6 +18,7 @@ from galatiq.db import (
     init_db,
     list_inventory,
     list_vendors,
+    record_invoice,
 )
 
 app = typer.Typer(add_completion=False, help="Galatiq invoice automation CLI")
@@ -91,6 +93,56 @@ def ingest_all_cmd(
     typer.echo(f"{len(files) - failures}/{len(files)} succeeded")
     if failures:
         sys.exit(1)
+
+
+@app.command("validate")
+def validate_cmd(
+    invoice_path: Path = typer.Option(..., "--invoice_path", exists=True, readable=True),
+    db_path: Path = typer.Option(DEFAULT_DB_PATH, "--db", help="Path to the SQLite file"),
+    allow_llm: bool = typer.Option(True, "--llm/--no-llm"),
+    record: bool = typer.Option(
+        False,
+        "--record/--no-record",
+        help="If verdict == pass, write the invoice to the ledger",
+    ),
+) -> None:
+    """Run ingestion + validation on a single invoice and print the report."""
+    load_dotenv()
+    if not db_path.exists():
+        typer.echo(f"FAILED: reference DB not found at {db_path}; run `db-init` first", err=True)
+        raise typer.Exit(code=2)
+    try:
+        ing = ingest(invoice_path, allow_llm=allow_llm)
+    except Exception as e:
+        typer.echo(f"INGESTION FAILED ({type(e).__name__}): {e}", err=True)
+        raise typer.Exit(code=1)
+    invoice = ing.invoice
+    with connect(db_path) as conn:
+        report = validate(invoice, conn=conn)
+        recorded = False
+        if record and report.verdict == "pass":
+            record_invoice(
+                conn,
+                invoice_number=invoice.invoice_number,
+                vendor=invoice.vendor,
+                total=invoice.total,
+                source_path=str(invoice_path),
+            )
+            recorded = True
+    typer.echo(f"file        : {invoice_path.name}")
+    typer.echo(f"ingestion   : {ing.path_taken} (retries={ing.llm_retries})")
+    typer.echo(f"verdict     : {report.verdict.upper()}")
+    if not report.findings:
+        typer.echo("findings    : (none)")
+    else:
+        typer.echo("findings    :")
+        for f in report.findings:
+            field = f" [{f.field}]" if f.field else ""
+            typer.echo(f"  - [{f.severity:<5}] {f.code}{field} — {f.message}")
+    if recorded:
+        typer.echo("ledger      : recorded")
+    if report.verdict == "reject":
+        raise typer.Exit(code=1)
 
 
 @app.command("db-init")

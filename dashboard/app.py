@@ -25,6 +25,7 @@ from dotenv import load_dotenv  # noqa: E402
 load_dotenv(REPO_ROOT / ".env")
 
 from galatiq.agents.ingestion import ingest  # noqa: E402
+from galatiq.agents.validation import validate  # noqa: E402
 from galatiq.db import (  # noqa: E402
     DEFAULT_DB_PATH,
     STATUS_ACTIVE,
@@ -39,6 +40,7 @@ from galatiq.db import (  # noqa: E402
     list_vendors,
     lookup_item,
     lookup_vendor,
+    record_invoice,
 )
 from galatiq.io.readers import read_invoice  # noqa: E402
 from galatiq.io.sanitize import strip_control_tags  # noqa: E402
@@ -329,6 +331,71 @@ def _render_stub(name: str, description: str) -> None:
     st.info(f"🚧 Not implemented yet. {description}")
 
 
+_VERDICT_BADGE = {
+    "pass": ("✅ PASS", "success"),
+    "needs_review": ("⚠️ NEEDS REVIEW", "warning"),
+    "reject": ("❌ REJECT", "error"),
+}
+
+
+def _render_validation(path: Path) -> None:
+    st.subheader("Validation report")
+    if not DB_PATH.exists():
+        st.warning("Reference DB not initialized. Use the sidebar button.")
+        return
+    try:
+        ing = ingest(path, allow_llm=True)
+    except Exception as e:  # noqa: BLE001
+        st.error(f"Ingestion failed before validation could run: {type(e).__name__}: {e}")
+        return
+    invoice = ing.invoice
+    with connect(DB_PATH) as conn:
+        report = validate(invoice, conn=conn)
+
+    label, kind = _VERDICT_BADGE[report.verdict]
+    {"success": st.success, "warning": st.warning, "error": st.error}[kind](
+        f"**Verdict:** {label} — {len(report.findings)} finding(s)"
+    )
+    by_sev = report.by_severity()
+    cols = st.columns(3)
+    cols[0].metric("Errors", len(by_sev["error"]))
+    cols[1].metric("Warnings", len(by_sev["warn"]))
+    cols[2].metric("Info", len(by_sev["info"]))
+
+    if report.findings:
+        st.markdown("**Findings**")
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "severity": f.severity,
+                        "code": f.code,
+                        "field": f.field or "—",
+                        "message": f.message,
+                    }
+                    for f in report.findings
+                ]
+            ),
+            hide_index=True,
+            width="stretch",
+        )
+
+    if report.verdict == "pass":
+        st.markdown("---")
+        if st.button("Record this invoice in the ledger"):
+            with connect(DB_PATH) as conn:
+                record_invoice(
+                    conn,
+                    invoice_number=invoice.invoice_number,
+                    vendor=invoice.vendor,
+                    total=invoice.total,
+                    source_path=str(path),
+                )
+            st.success(
+                f"Recorded `{invoice.invoice_number}` × `{invoice.vendor}` in `invoice_ledger`."
+            )
+
+
 def main() -> None:
     path = _resolve_selection()
     if path is None:
@@ -354,10 +421,7 @@ def main() -> None:
     with ingestion_tab:
         _render_ingestion(path)
     with validation_tab:
-        _render_stub(
-            "Validation",
-            "Will cross-check totals, dates, vendor identity, and policy rules.",
-        )
+        _render_validation(path)
     with approval_tab:
         _render_stub(
             "Approval",
