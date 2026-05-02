@@ -25,11 +25,27 @@ from dotenv import load_dotenv  # noqa: E402
 load_dotenv(REPO_ROOT / ".env")
 
 from galatiq.agents.ingestion import ingest  # noqa: E402
+from galatiq.db import (  # noqa: E402
+    DEFAULT_DB_PATH,
+    STATUS_ACTIVE,
+    STATUS_BLOCKED,
+    STATUS_DISCONTINUED,
+    STATUS_FRAUD,
+    STATUS_NEW,
+    connect,
+    has_invoice,
+    init_db,
+    list_inventory,
+    list_vendors,
+    lookup_item,
+    lookup_vendor,
+)
 from galatiq.io.readers import read_invoice  # noqa: E402
 from galatiq.io.sanitize import strip_control_tags  # noqa: E402
 
 INVOICE_DIR = REPO_ROOT / "data" / "invoices"
 SUPPORTED_SUFFIXES = {".txt", ".json", ".csv", ".xml", ".pdf"}
+DB_PATH = REPO_ROOT / DEFAULT_DB_PATH
 
 st.set_page_config(page_title="Galatiq Pipeline Dashboard", layout="wide")
 st.title("Galatiq Invoice Pipeline")
@@ -57,6 +73,15 @@ def _resolve_selection() -> Path | None:
             "3. Approval 🚧\n"
             "4. Payment 🚧"
         )
+        st.divider()
+        st.markdown("**Reference DB**")
+        if DB_PATH.exists():
+            st.caption(f"`{DB_PATH.name}` present")
+        else:
+            st.caption(f"`{DB_PATH.name}` missing")
+        if st.button("Initialize / refresh DB"):
+            init_db(DB_PATH, fresh=True)
+            st.success("Reference DB rebuilt from seed.")
 
     if upload is not None:
         suffix = Path(upload.name).suffix.lower()
@@ -187,11 +212,116 @@ def _render_ingestion(path: Path) -> None:
         for n in result.notes:
             st.info(n)
 
+    _render_db_lookup_panel(inv)
+
     with st.expander("Full Invoice JSON"):
         st.code(
             json.dumps(inv.model_dump(mode="json"), indent=2, default=_decimal_default),
             language="json",
         )
+
+
+_STATUS_BADGE = {
+    STATUS_ACTIVE: "✅ active",
+    STATUS_DISCONTINUED: "⏸ discontinued",
+    STATUS_FRAUD: "🚫 fraud_flag",
+    STATUS_BLOCKED: "🚫 blocked",
+    STATUS_NEW: "🆕 new",
+}
+
+
+def _render_db_lookup_panel(inv) -> None:
+    st.markdown("---")
+    st.markdown("**Reference DB lookup** (preview of validation-phase signals)")
+    if not DB_PATH.exists():
+        st.info("Reference DB not initialized. Click **Initialize / refresh DB** in the sidebar.")
+        return
+
+    with connect(DB_PATH) as conn:
+        # Vendor match
+        vendor = lookup_vendor(conn, inv.vendor or "")
+        if vendor is None:
+            st.error(f"❓ Vendor `{inv.vendor}` not in vendor table — possible new or unrecognized counterparty.")
+        else:
+            badge = _STATUS_BADGE.get(vendor.status, vendor.status)
+            line = f"{badge} matched **{vendor.name}** (`{vendor.vendor_id}`)"
+            if vendor.aliases:
+                line += f" via aliases {vendor.aliases}"
+            if vendor.status == STATUS_BLOCKED:
+                st.error(line + " — payment must not proceed.")
+            elif vendor.status == STATUS_NEW:
+                st.warning(line + " — first-time vendor, escalate.")
+            else:
+                st.success(line)
+            if vendor.default_currency and inv.currency != vendor.default_currency:
+                st.warning(
+                    f"Currency drift: invoice in {inv.currency}, vendor default is {vendor.default_currency}."
+                )
+
+        # Dedup
+        if inv.invoice_number and inv.vendor:
+            already = has_invoice(conn, inv.invoice_number, inv.vendor)
+            if already:
+                st.warning(
+                    f"Duplicate ledger entry: `{inv.invoice_number}` already recorded for `{inv.vendor}`."
+                )
+            else:
+                st.caption(f"No ledger entry yet for `{inv.invoice_number}` × `{inv.vendor}`.")
+
+        # Per-line item lookup
+        rows = []
+        for li in inv.line_items:
+            db_item = lookup_item(conn, li.item)
+            if db_item is None:
+                rows.append(
+                    {
+                        "item": li.item,
+                        "qty": li.quantity,
+                        "qty vs stock": "❓ unknown SKU",
+                        "status": "—",
+                        "catalog price": "—",
+                        "price drift": "—",
+                    }
+                )
+                continue
+            qty_marker = "✅"
+            if li.quantity < 0:
+                qty_marker = "❌ negative qty"
+            elif li.quantity > db_item.stock and db_item.stock > 0:
+                qty_marker = f"⚠️ {li.quantity} > stock {db_item.stock}"
+            elif db_item.stock == 0:
+                qty_marker = f"⚠️ stock 0"
+            else:
+                qty_marker = f"✅ {li.quantity} ≤ {db_item.stock}"
+
+            drift = "—"
+            if db_item.unit_price is not None:
+                expected = db_item.unit_price
+                actual = li.unit_price
+                if expected == 0:
+                    drift = "—"
+                else:
+                    pct = (actual - expected) / expected * 100
+                    if abs(pct) < 1:
+                        drift = "≈ catalog"
+                    elif pct > 0:
+                        drift = f"+{pct:.1f}% over catalog"
+                    else:
+                        drift = f"{pct:.1f}% under catalog"
+            rows.append(
+                {
+                    "item": li.item,
+                    "qty": li.quantity,
+                    "qty vs stock": qty_marker,
+                    "status": _STATUS_BADGE.get(db_item.status, db_item.status),
+                    "catalog price": str(db_item.unit_price) if db_item.unit_price is not None else "—",
+                    "price drift": drift,
+                }
+            )
+        if rows:
+            st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+        else:
+            st.info("No line items to look up.")
 
 
 def _render_stub(name: str, description: str) -> None:
@@ -206,8 +336,16 @@ def main() -> None:
         return
 
     st.caption(f"**File:** `{path.name}` ({path.suffix.lower().lstrip('.')})")
-    raw_tab, sanitized_tab, ingestion_tab, validation_tab, approval_tab, payment_tab = st.tabs(
-        ["Raw", "Sanitized", "Ingestion", "Validation", "Approval", "Payment"]
+    (
+        raw_tab,
+        sanitized_tab,
+        ingestion_tab,
+        validation_tab,
+        approval_tab,
+        payment_tab,
+        db_tab,
+    ) = st.tabs(
+        ["Raw", "Sanitized", "Ingestion", "Validation", "Approval", "Payment", "Reference DB"]
     )
     with raw_tab:
         raw = _render_raw(path)
@@ -230,6 +368,53 @@ def main() -> None:
             "Payment",
             "Will schedule the payment via the configured rail and emit a receipt.",
         )
+    with db_tab:
+        _render_reference_db()
+
+
+def _render_reference_db() -> None:
+    st.subheader("Reference DB contents")
+    if not DB_PATH.exists():
+        st.info("DB not initialized yet — use the sidebar button.")
+        return
+    with connect(DB_PATH) as conn:
+        inventory = list_inventory(conn)
+        vendors = list_vendors(conn)
+    st.markdown("**Inventory**")
+    st.dataframe(
+        pd.DataFrame(
+            [
+                {
+                    "item": i.item,
+                    "stock": i.stock,
+                    "unit_price": str(i.unit_price) if i.unit_price is not None else "—",
+                    "category": i.category or "—",
+                    "status": _STATUS_BADGE.get(i.status, i.status),
+                }
+                for i in inventory
+            ]
+        ),
+        hide_index=True,
+        width="stretch",
+    )
+    st.markdown("**Vendors**")
+    st.dataframe(
+        pd.DataFrame(
+            [
+                {
+                    "vendor_id": v.vendor_id,
+                    "name": v.name,
+                    "status": _STATUS_BADGE.get(v.status, v.status),
+                    "aliases": ", ".join(v.aliases) if v.aliases else "—",
+                    "address": v.address or "—",
+                    "default_currency": v.default_currency or "—",
+                }
+                for v in vendors
+            ]
+        ),
+        hide_index=True,
+        width="stretch",
+    )
 
 
 if __name__ == "__main__":

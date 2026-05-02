@@ -9,7 +9,15 @@ import typer
 from dotenv import load_dotenv
 
 from galatiq.agents.ingestion import ingest
-from galatiq.db import DEFAULT_DB_PATH, SEED_INVENTORY, connect, init_db, list_items
+from galatiq.db import (
+    DEFAULT_DB_PATH,
+    SEED_INVENTORY,
+    SEED_VENDORS,
+    connect,
+    init_db,
+    list_inventory,
+    list_vendors,
+)
 
 app = typer.Typer(add_completion=False, help="Galatiq invoice automation CLI")
 
@@ -88,16 +96,26 @@ def ingest_all_cmd(
 @app.command("db-init")
 def db_init_cmd(
     db_path: Path = typer.Option(DEFAULT_DB_PATH, "--db", help="Path to the SQLite file"),
+    fresh: bool = typer.Option(True, "--fresh/--keep", help="Recreate the file from scratch"),
 ) -> None:
-    """Create the inventory DB (if absent), apply schema, and insert seed rows."""
-    path = init_db(db_path)
+    """(Re)create the reference DB and apply seed inventory + vendor data."""
+    path = init_db(db_path, fresh=fresh)
     with connect(path) as conn:
-        rows = list_items(conn)
-    typer.echo(f"db          : {path}")
-    typer.echo(f"seed defined: {len(SEED_INVENTORY)} items")
+        inventory = list_inventory(conn)
+        vendors = list_vendors(conn)
+    typer.echo(f"db          : {path}  ({'fresh' if fresh else 'kept'})")
+    typer.echo(f"seed defined: {len(SEED_INVENTORY)} items, {len(SEED_VENDORS)} vendors")
     typer.echo("inventory   :")
-    for item, stock in rows:
-        typer.echo(f"  - {item:<12} {stock}")
+    for inv_item in inventory:
+        price = "—" if inv_item.unit_price is None else f"${inv_item.unit_price}"
+        typer.echo(
+            f"  - {inv_item.item:<16} stock={inv_item.stock:<5} price={price:<10} "
+            f"category={inv_item.category or '—':<12} status={inv_item.status}"
+        )
+    typer.echo("vendors     :")
+    for v in vendors:
+        aliases = ", ".join(v.aliases) if v.aliases else "—"
+        typer.echo(f"  - {v.vendor_id} {v.name!r:<24} status={v.status:<12} aliases=[{aliases}]")
 
 
 def main() -> None:
