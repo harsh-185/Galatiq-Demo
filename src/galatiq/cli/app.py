@@ -236,8 +236,11 @@ def pay_cmd(
             typer.echo(f"  note: {n}")
 
     fraud_findings = state.get("fraud_findings") or []
-    if fraud_findings:
+    fraud_trace = state.get("fraud_tool_trace") or []
+    if fraud_findings or fraud_trace:
         typer.echo("fraud screen:")
+        for call in fraud_trace:
+            typer.echo(f"  tool → {call}")
         for f in fraud_findings:
             typer.echo(f"  - [{f.severity}] {f.code} — {f.message}")
 
@@ -252,13 +255,26 @@ def pay_cmd(
             typer.echo(f"  currency guess : {profile.default_currency_guess}")
 
     risk = state.get("risk_assessment")
+    inv_trace = state.get("investigator_tool_trace") or []
     if risk is not None:
         typer.echo("risk assessment:")
+        for call in inv_trace:
+            typer.echo(f"  tool → {call}")
         typer.echo(f"  severity   : {risk.severity_summary}")
         typer.echo(f"  hypothesis : {risk.root_cause_hypothesis}")
         typer.echo(f"  recommend  : {risk.recommended_action}")
         for item in risk.items_to_verify:
             typer.echo(f"  verify  → {item}")
+
+    crit = state.get("critique")
+    pre = state.get("pre_critique_decision")
+    if crit is not None and pre is not None and crit.action != "confirm":
+        typer.echo("critic override:")
+        typer.echo(f"  pre  : {pre.status} ({pre.approver_role}, {pre.policy_id or '—'})")
+        typer.echo(f"  post : {decision.status} ({decision.approver_role}, {decision.policy_id or '—'})")
+        typer.echo(f"  reason: {crit.rationale}")
+    elif crit is not None and crit.action == "confirm":
+        typer.echo(f"critic       : confirmed — {crit.rationale}")
 
     just = state.get("llm_justification")
     if just is not None:

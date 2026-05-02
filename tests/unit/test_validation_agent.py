@@ -56,12 +56,24 @@ def test_stock_overflow_rejects(db_conn):
 
 def test_fraud_flag_sku_rejects(db_conn):
     inv = _invoice(
-        line_items=[{"item": "FakeItem", "quantity": 1, "unit_price": "9.99"}],
+        line_items=[{"item": "PhantomSKU", "quantity": 1, "unit_price": "9.99"}],
         subtotal="9.99",
         total="9.99",
     )
     report = validate(inv, conn=db_conn)
     assert "fraud_flag_sku" in _codes(report)
+    assert report.verdict == "reject"
+
+
+def test_zero_stock_fakeitem_rejects(db_conn):
+    """Spec scenario: FakeItem has stock=0 → rejected as out of stock."""
+    inv = _invoice(
+        line_items=[{"item": "FakeItem", "quantity": 1, "unit_price": "9.99"}],
+        subtotal="9.99",
+        total="9.99",
+    )
+    report = validate(inv, conn=db_conn)
+    assert "zero_stock" in _codes(report)
     assert report.verdict == "reject"
 
 
@@ -99,14 +111,26 @@ def test_discontinued_sku_warns(db_conn):
 
 
 def test_price_drift_warns(db_conn):
+    # BoltPack lives in the EXTRA seed at $5.00; spec items don't have unit_price.
     inv = _invoice(
-        line_items=[{"item": "WidgetA", "quantity": 1, "unit_price": "100.00"}],  # catalog $10
-        subtotal="100.00",
-        total="100.00",
+        line_items=[{"item": "BoltPack", "quantity": 1, "unit_price": "50.00"}],  # catalog $5
+        subtotal="50.00",
+        total="50.00",
     )
     report = validate(inv, conn=db_conn)
     assert "price_drift_high" in _codes(report)
     assert report.verdict == "needs_review"
+
+
+def test_no_price_drift_for_spec_items(db_conn):
+    """Spec items (WidgetA/B, GadgetX, FakeItem) have no unit_price seeded → drift rule must not fire."""
+    inv = _invoice(
+        line_items=[{"item": "WidgetA", "quantity": 1, "unit_price": "999.99"}],
+        subtotal="999.99",
+        total="999.99",
+    )
+    report = validate(inv, conn=db_conn)
+    assert "price_drift_high" not in _codes(report)
 
 
 def test_blocked_vendor_rejects(db_conn):

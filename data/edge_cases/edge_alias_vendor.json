@@ -1,0 +1,15 @@
+{
+  "invoice_number": "EDGE-ALIAS-001",
+  "vendor": "ACME",
+  "vendor_address": "123 Acme St, Springfield",
+  "date": "2026-04-10",
+  "due_date": "2026-05-10",
+  "currency": "USD",
+  "line_items": [
+    {"item": "BoltPack", "quantity": 100, "unit_price": "5.00"}
+  ],
+  "subtotal": "500.00",
+  "tax": "0.00",
+  "total": "500.00",
+  "payment_terms": "Net 30"
+}

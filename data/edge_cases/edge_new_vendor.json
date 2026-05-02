@@ -1,0 +1,15 @@
+{
+  "invoice_number": "EDGE-NEW-001",
+  "vendor": "NewCo",
+  "vendor_address": "789 Newcomer Rd",
+  "date": "2026-04-10",
+  "due_date": "2026-05-15",
+  "currency": "USD",
+  "line_items": [
+    {"item": "BoltPack", "quantity": 50, "unit_price": "5.00"}
+  ],
+  "subtotal": "250.00",
+  "tax": "0.00",
+  "total": "250.00",
+  "payment_terms": "Net 30"
+}

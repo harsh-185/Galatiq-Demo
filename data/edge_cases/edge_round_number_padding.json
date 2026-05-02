@@ -1,0 +1,14 @@
+{
+  "invoice_number": "EDGE-ROUND-001",
+  "vendor": "Acme Corp",
+  "date": "2026-04-10",
+  "currency": "USD",
+  "line_items": [
+    {"item": "BoltPack", "quantity": 100, "unit_price": "10.00"},
+    {"item": "BoltPack", "quantity": 200, "unit_price": "10.00"},
+    {"item": "BoltPack", "quantity": 300, "unit_price": "10.00"}
+  ],
+  "subtotal": "6000.00",
+  "tax": "0.00",
+  "total": "6000.00"
+}

@@ -55,13 +55,11 @@ def enable_llm_agents(monkeypatch):
 
 
 def _stub_extract(monkeypatch, target_module, schema, instance):
-    """Replace the agent module's imported ``extract_structured`` with a stub."""
+    """Stub the simple structured-output path used by vendor_onboarding/justifier."""
     def _fake(schema_cls, *, system, user, max_retries=2):
         assert schema_cls is schema
         return instance, 0
 
-    # The agent imports run_llm_agent from _llm_helpers, which imports
-    # extract_structured. Patch it at the helper module.
     import galatiq.agents._llm_helpers as helpers
     monkeypatch.setattr(helpers, "extract_structured", _fake)
 
@@ -74,14 +72,30 @@ def _stub_extract_raises(monkeypatch, exc):
     monkeypatch.setattr(helpers, "extract_structured", _fake)
 
 
+def _stub_tool_agent(monkeypatch, instance, *, trace=None):
+    """Stub the tool-using agent path used by fraud_screener/investigator."""
+    def _fake(schema, *, system, user, tools, fallback, max_tool_loops=4):
+        return instance, None, list(trace or [])
+
+    import galatiq.agents._llm_helpers as helpers
+    monkeypatch.setattr(helpers, "run_tool_using_agent", _fake)
+
+
+def _stub_tool_agent_raises(monkeypatch, exc):
+    def _fake(schema, *, system, user, tools, fallback, max_tool_loops=4):
+        # Mirror the helper's failure mode: return fallback + error string.
+        return fallback(), f"{type(exc).__name__}: {exc}", []
+
+    import galatiq.agents._llm_helpers as helpers
+    monkeypatch.setattr(helpers, "run_tool_using_agent", _fake)
+
+
 # --- fraud_screener ----------------------------------------------------------
 
 
 def test_fraud_screener_returns_findings(monkeypatch, db_conn):
-    _stub_extract(
+    _stub_tool_agent(
         monkeypatch,
-        fraud_screener,
-        FraudScreenResult,
         FraudScreenResult(
             findings=[
                 _ScreenedFinding(
@@ -92,28 +106,31 @@ def test_fraud_screener_returns_findings(monkeypatch, db_conn):
                 )
             ]
         ),
+        trace=["lookup_vendor(name='Acrne Corp')", "list_known_vendors()"],
     )
-    findings, err = fraud_screener.screen(_invoice(), conn=db_conn)
+    findings, err, trace = fraud_screener.screen(_invoice(), conn=db_conn)
     assert err is None
     assert len(findings) == 1
     assert findings[0].code == "vendor_typosquat"
     assert findings[0].severity == "warn"
+    assert "lookup_vendor" in trace[0]
 
 
 def test_fraud_screener_falls_back_on_llm_error(monkeypatch, db_conn):
-    _stub_extract_raises(monkeypatch, RuntimeError("boom"))
-    findings, err = fraud_screener.screen(_invoice(), conn=db_conn)
+    _stub_tool_agent_raises(monkeypatch, RuntimeError("boom"))
+    findings, err, trace = fraud_screener.screen(_invoice(), conn=db_conn)
     assert findings == []
     assert err is not None
     assert "boom" in err
+    assert trace == []
 
 
 def test_fraud_screener_skipped_when_disabled(monkeypatch, db_conn):
     monkeypatch.setenv("GALATIQ_LLM_AGENTS", "0")
-    # Stub still in place would error; if the disabled branch works, we never call it.
-    findings, err = fraud_screener.screen(_invoice(), conn=db_conn)
+    findings, err, trace = fraud_screener.screen(_invoice(), conn=db_conn)
     assert findings == []
     assert err is None
+    assert trace == []
 
 
 # --- vendor_onboarding -------------------------------------------------------
@@ -167,22 +184,28 @@ def test_investigator_returns_assessment(monkeypatch, db_conn):
         recommended_action="request_clarification",
         items_to_verify=["Confirm canonical vendor name", "Cross-check PO number"],
     )
-    _stub_extract(monkeypatch, investigator, RiskAssessment, assessment)
+    _stub_tool_agent(
+        monkeypatch,
+        assessment,
+        trace=["lookup_vendor(name='Mystery Vendor')"],
+    )
     inv = _invoice(vendor="Mystery Vendor")
     report = validate(inv, conn=db_conn)
-    out, err = investigator.assess(inv, report, conn=db_conn)
+    out, err, trace = investigator.assess(inv, report, conn=db_conn)
     assert err is None
     assert out.recommended_action == "request_clarification"
+    assert any("lookup_vendor" in t for t in trace)
 
 
 def test_investigator_fallback_summarizes_findings(monkeypatch, db_conn):
-    _stub_extract_raises(monkeypatch, RuntimeError("nope"))
+    _stub_tool_agent_raises(monkeypatch, RuntimeError("nope"))
     inv = _invoice(vendor="Mystery Vendor")
     report = validate(inv, conn=db_conn)
-    out, err = investigator.assess(inv, report, conn=db_conn)
+    out, err, trace = investigator.assess(inv, report, conn=db_conn)
     assert err is not None
     # Fallback echoes the validation finding codes back as items_to_verify.
     assert any("vendor_unknown" in s for s in out.items_to_verify)
+    assert trace == []
 
 
 # --- justifier ---------------------------------------------------------------

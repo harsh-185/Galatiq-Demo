@@ -1,0 +1,13 @@
+{
+  "invoice_number": "EDGE-PHANTOM-001",
+  "vendor": "Acme Corp",
+  "vendor_address": "123 Acme St, Springfield",
+  "date": "2026-04-10",
+  "currency": "USD",
+  "line_items": [
+    {"item": "PhantomSKU", "quantity": 1, "unit_price": "9999.00"}
+  ],
+  "subtotal": "9999.00",
+  "tax": "0.00",
+  "total": "9999.00"
+}

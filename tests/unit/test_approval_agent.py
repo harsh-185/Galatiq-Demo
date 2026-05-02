@@ -84,7 +84,7 @@ def test_cfo_band_for_huge_invoice(db_conn):
 
 def test_reject_short_circuits(db_conn):
     inv = _invoice(
-        line_items=[{"item": "FakeItem", "quantity": 1, "unit_price": "9.99"}],
+        line_items=[{"item": "PhantomSKU", "quantity": 1, "unit_price": "9.99"}],
         subtotal="9.99",
         total="9.99",
     )
@@ -112,11 +112,12 @@ def test_eur_invoice_normalizes_to_usd_for_tier_match(db_conn):
 
 
 def test_needs_review_routes_to_human_even_below_auto(db_conn):
-    # WidgetA at $100 → +900% drift → warn → needs_review even at small total
+    # BoltPack catalog price $5; invoiced at $50 → +900% drift → warn → needs_review.
+    # Total stays under the $1k auto threshold.
     inv = _invoice(
-        line_items=[{"item": "WidgetA", "quantity": 1, "unit_price": "100.00"}],
-        subtotal="100.00",
-        total="100.00",
+        line_items=[{"item": "BoltPack", "quantity": 1, "unit_price": "50.00"}],
+        subtotal="50.00",
+        total="50.00",
     )
     report = validate(inv, conn=db_conn)
     decision = approve(inv, report, conn=db_conn)

@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+from galatiq.agents.critic import Critique
 from galatiq.agents.fraud_screener import FraudScreenResult, _ScreenedFinding
 from galatiq.agents.investigator import RiskAssessment
 from galatiq.agents.justifier import Justification
@@ -63,15 +64,22 @@ def stub_llm(monkeypatch):
             items_to_verify=["Confirm canonical vendor name"],
         ),
         Justification: Justification(text="Stub narrative."),
+        Critique: Critique(action="confirm", rationale="rule engine looks correct"),
     }
 
-    def _fake(schema, *, system, user, max_retries=2):
+    def _fake_extract(schema, *, system, user, max_retries=2):
         if schema not in canned:
             raise RuntimeError(f"no stub for {schema!r}")
         return canned[schema], 0
 
+    def _fake_tool_agent(schema, *, system, user, tools, fallback, max_tool_loops=4):
+        if schema not in canned:
+            return fallback(), f"no stub for {schema!r}", []
+        return canned[schema], None, []
+
     import galatiq.agents._llm_helpers as helpers
-    monkeypatch.setattr(helpers, "extract_structured", _fake)
+    monkeypatch.setattr(helpers, "extract_structured", _fake_extract)
+    monkeypatch.setattr(helpers, "run_tool_using_agent", _fake_tool_agent)
     return canned
 
 
@@ -158,7 +166,7 @@ def test_reject_route_skips_specialists_and_runs_justifier(tmp_path, db_path, re
             "vendor": "Acme Corp",
             "date": "2026-01-01",
             "currency": "USD",
-            "line_items": [{"item": "FakeItem", "quantity": 1, "unit_price": "9.99"}],
+            "line_items": [{"item": "PhantomSKU", "quantity": 1, "unit_price": "9.99"}],
             "subtotal": "9.99",
             "tax": "0.00",
             "total": "9.99",
@@ -194,13 +202,18 @@ def test_fraud_finding_can_promote_pass_to_needs_review(tmp_path, db_path, recei
             items_to_verify=["Confirm pricing with vendor"],
         ),
         Justification: Justification(text="Routed to investigator due to fraud screen."),
+        Critique: Critique(action="confirm", rationale="ok"),
     }
 
-    def _fake(schema, *, system, user, max_retries=2):
+    def _fake_extract(schema, *, system, user, max_retries=2):
         return canned[schema], 0
 
+    def _fake_tool_agent(schema, *, system, user, tools, fallback, max_tool_loops=4):
+        return canned[schema], None, []
+
     import galatiq.agents._llm_helpers as helpers
-    monkeypatch.setattr(helpers, "extract_structured", _fake)
+    monkeypatch.setattr(helpers, "extract_structured", _fake_extract)
+    monkeypatch.setattr(helpers, "run_tool_using_agent", _fake_tool_agent)
 
     # Otherwise-clean invoice. Without fraud findings → pass → no investigator.
     inv = _write(

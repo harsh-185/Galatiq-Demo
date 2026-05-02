@@ -95,14 +95,24 @@ _DDL = [
     """,
 ]
 
+# Spec-mandated seed: matches the README exactly so the documented test
+# scenarios (INV-1001/1002/1003/1008/1009/1016) reproduce as described.
+# Other columns are NULL/default — the spec uses (item, stock) only.
 SEED_INVENTORY: list[dict[str, Any]] = [
-    {"item": "WidgetA", "stock": 15, "unit_price": "10.00", "category": "hardware", "status": STATUS_ACTIVE},
-    {"item": "WidgetB", "stock": 10, "unit_price": "25.00", "category": "hardware", "status": STATUS_ACTIVE},
-    {"item": "GadgetX", "stock": 5,  "unit_price": "50.00", "category": "electronics", "status": STATUS_ACTIVE},
-    {"item": "FakeItem", "stock": 0, "unit_price": None,    "category": None,         "status": STATUS_FRAUD},
-    {"item": "GizmoPro", "stock": 100, "unit_price": "200.00", "category": "electronics", "status": STATUS_DISCONTINUED},
-    {"item": "BoltPack", "stock": 500, "unit_price": "5.00",   "category": "hardware",    "status": STATUS_ACTIVE},
-    {"item": "LaserCutterPro", "stock": 3, "unit_price": "25000.00", "category": "equipment", "status": STATUS_ACTIVE},
+    {"item": "WidgetA",  "stock": 15},
+    {"item": "WidgetB",  "stock": 10},
+    {"item": "GadgetX",  "stock": 5},
+    {"item": "FakeItem", "stock": 0},
+]
+
+# Optional extensions exercised by additional edge-case tests. The spec
+# explicitly permits "additional items or columns to support richer validation".
+# These items demonstrate price-drift, discontinued, and fraud-flag rules.
+SEED_INVENTORY_EXTRA: list[dict[str, Any]] = [
+    {"item": "GizmoPro",       "stock": 100, "unit_price": "200.00",  "category": "electronics", "status": STATUS_DISCONTINUED},
+    {"item": "BoltPack",       "stock": 500, "unit_price": "5.00",    "category": "hardware",    "status": STATUS_ACTIVE},
+    {"item": "LaserCutterPro", "stock": 3,   "unit_price": "25000.00","category": "equipment",   "status": STATUS_ACTIVE},
+    {"item": "PhantomSKU",     "stock": 0,   "unit_price": None,      "category": None,          "status": STATUS_FRAUD},
 ]
 
 SEED_APPROVAL_POLICIES: list[dict[str, Any]] = [
@@ -255,9 +265,17 @@ def seed_approval_policies(
     return cur.rowcount
 
 
-def seed_defaults(conn: sqlite3.Connection) -> int:
-    """Seed inventory, vendor, and approval-policy reference data. Returns total rows inserted."""
-    return seed_inventory(conn) + seed_vendors(conn) + seed_approval_policies(conn)
+def seed_defaults(conn: sqlite3.Connection, *, include_extras: bool = True) -> int:
+    """Seed reference data. Returns total rows inserted.
+
+    The spec-mandated minimum is ``SEED_INVENTORY`` (4 items) and the vendors
+    table. Extras (``SEED_INVENTORY_EXTRA``) cover discontinued, fraud-flag,
+    and high-value items used by extended validation tests.
+    """
+    inserted = seed_inventory(conn) + seed_vendors(conn) + seed_approval_policies(conn)
+    if include_extras:
+        inserted += seed_inventory(conn, SEED_INVENTORY_EXTRA)
+    return inserted
 
 
 def lookup_item(conn: sqlite3.Connection, name: str) -> InventoryItem | None:

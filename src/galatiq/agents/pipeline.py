@@ -25,6 +25,7 @@ from typing import TypedDict
 from langgraph.graph import END, START, StateGraph
 
 from galatiq.agents.approval import ApprovalDecision, approve
+from galatiq.agents.critic import Critique, apply_override, critique as critic_run
 from galatiq.agents.fraud_screener import screen as fraud_screen
 from galatiq.agents.ingestion import IngestionResult, ingest
 from galatiq.agents.investigator import RiskAssessment, assess as investigate
@@ -56,10 +57,14 @@ class PipelineState(TypedDict, total=False):
     receipt_dir: Path
     ingestion: IngestionResult | None
     fraud_findings: list[Finding]
+    fraud_tool_trace: list[str]
+    investigator_tool_trace: list[str]
     report: ValidationReport | None
     risk_assessment: RiskAssessment | None
     vendor_profile: VendorProfile | None
     decision: ApprovalDecision | None
+    pre_critique_decision: ApprovalDecision | None
+    critique: Critique | None
     llm_justification: Justification | None
     payment: PaymentRecord | None
     receipt_body: str | None
@@ -84,8 +89,8 @@ def _fraud_screen_node(state: PipelineState) -> PipelineState:
     invoice = state["ingestion"].invoice
     db_path = state["db_path"]
     with connect(db_path) as conn:
-        findings, err = fraud_screen(invoice, conn=conn)
-    update: PipelineState = {"fraud_findings": findings}
+        findings, err, trace = fraud_screen(invoice, conn=conn)
+    update: PipelineState = {"fraud_findings": findings, "fraud_tool_trace": trace}
     if err:
         update["llm_agent_errors"] = state.get("llm_agent_errors", []) + [f"fraud_screener: {err}"]
     return update
@@ -144,14 +149,15 @@ def _investigator_node(state: PipelineState) -> PipelineState:
     report = state["report"]
     db_path = state["db_path"]
     with connect(db_path) as conn:
-        assessment, err = investigate(invoice, report, conn=conn)
-    update: PipelineState = {"risk_assessment": assessment}
+        assessment, err, trace = investigate(invoice, report, conn=conn)
+    update: PipelineState = {"risk_assessment": assessment, "investigator_tool_trace": trace}
     if err:
         update["llm_agent_errors"] = state.get("llm_agent_errors", []) + [f"investigator: {err}"]
     return update
 
 
 def _approve_node(state: PipelineState) -> PipelineState:
+    """Produce the rule-based decision; defer audit-log write until after the critic."""
     if state.get("ingestion") is None or state.get("report") is None:
         return {}
     invoice = state["ingestion"].invoice
@@ -159,16 +165,43 @@ def _approve_node(state: PipelineState) -> PipelineState:
     db_path = state["db_path"]
     with connect(db_path) as conn:
         decision = approve(invoice, report, conn=conn)
+    return {"decision": decision}
+
+
+def _critic_node(state: PipelineState) -> PipelineState:
+    """Single-pass reflection: confirm or escalate the rule-based decision.
+
+    Records the FINAL (post-critique) decision to approval_log so the audit
+    trail reflects what the system actually committed to.
+    """
+    if state.get("ingestion") is None or state.get("decision") is None or state.get("report") is None:
+        return {}
+    invoice = state["ingestion"].invoice
+    report = state["report"]
+    initial_decision = state["decision"]
+    crit, err = critic_run(invoice, report, initial_decision)
+    revised = apply_override(initial_decision, crit)
+
+    db_path = state["db_path"]
+    with connect(db_path) as conn:
         record_approval(
             conn,
             invoice_number=invoice.invoice_number,
             vendor=invoice.vendor,
-            status=decision.status,
-            approver_role=decision.approver_role,
-            policy_id=decision.policy_id,
-            total_usd=decision.total_usd,
+            status=revised.status,
+            approver_role=revised.approver_role,
+            policy_id=revised.policy_id,
+            total_usd=revised.total_usd,
         )
-    return {"decision": decision}
+
+    update: PipelineState = {
+        "critique": crit,
+        "pre_critique_decision": initial_decision,
+        "decision": revised,
+    }
+    if err:
+        update["llm_agent_errors"] = state.get("llm_agent_errors", []) + [f"critic: {err}"]
+    return update
 
 
 def _justifier_node(state: PipelineState) -> PipelineState:
@@ -260,6 +293,7 @@ def _build_graph():
     g.add_node("vendor_onboarding", _vendor_onboarding_node)
     g.add_node("investigator", _investigator_node)
     g.add_node("approve", _approve_node)
+    g.add_node("critic", _critic_node)
     g.add_node("justifier", _justifier_node)
     g.add_node("pay", _pay_node)
 
@@ -277,7 +311,8 @@ def _build_graph():
     )
     g.add_edge("vendor_onboarding", "approve")
     g.add_edge("investigator", "approve")
-    g.add_edge("approve", "justifier")
+    g.add_edge("approve", "critic")
+    g.add_edge("critic", "justifier")
     g.add_edge("justifier", "pay")
     g.add_edge("pay", END)
     return g.compile()

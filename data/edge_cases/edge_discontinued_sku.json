@@ -1,0 +1,15 @@
+{
+  "invoice_number": "EDGE-DISC-001",
+  "vendor": "Acme Corp",
+  "vendor_address": "123 Acme St, Springfield",
+  "date": "2026-04-10",
+  "due_date": "2026-05-10",
+  "currency": "USD",
+  "line_items": [
+    {"item": "GizmoPro", "quantity": 2, "unit_price": "200.00"}
+  ],
+  "subtotal": "400.00",
+  "tax": "0.00",
+  "total": "400.00",
+  "payment_terms": "Net 30"
+}
