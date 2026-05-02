@@ -9,6 +9,7 @@ import typer
 from dotenv import load_dotenv
 
 from galatiq.agents.ingestion import ingest
+from galatiq.db import DEFAULT_DB_PATH, SEED_INVENTORY, connect, init_db, list_items
 
 app = typer.Typer(add_completion=False, help="Galatiq invoice automation CLI")
 
@@ -82,6 +83,21 @@ def ingest_all_cmd(
     typer.echo(f"{len(files) - failures}/{len(files)} succeeded")
     if failures:
         sys.exit(1)
+
+
+@app.command("db-init")
+def db_init_cmd(
+    db_path: Path = typer.Option(DEFAULT_DB_PATH, "--db", help="Path to the SQLite file"),
+) -> None:
+    """Create the inventory DB (if absent), apply schema, and insert seed rows."""
+    path = init_db(db_path)
+    with connect(path) as conn:
+        rows = list_items(conn)
+    typer.echo(f"db          : {path}")
+    typer.echo(f"seed defined: {len(SEED_INVENTORY)} items")
+    typer.echo("inventory   :")
+    for item, stock in rows:
+        typer.echo(f"  - {item:<12} {stock}")
 
 
 def main() -> None:
