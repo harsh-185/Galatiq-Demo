@@ -20,6 +20,10 @@ import streamlit as st
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
+from dotenv import load_dotenv  # noqa: E402
+
+load_dotenv(REPO_ROOT / ".env")
+
 from galatiq.agents.ingestion import ingest  # noqa: E402
 from galatiq.io.readers import read_invoice  # noqa: E402
 from galatiq.io.sanitize import strip_control_tags  # noqa: E402
