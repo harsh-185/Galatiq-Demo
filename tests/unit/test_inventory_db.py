@@ -128,3 +128,65 @@ def test_init_db_fresh_resets_existing_file(tmp_path):
     init_db(db_path, fresh=True)
     with connect(db_path) as conn:
         assert get_stock(conn, "WidgetA") == 15
+
+
+def test_lookup_policy_bands(tmp_path):
+    from galatiq.db import lookup_policy
+
+    db_path = tmp_path / "inv.db"
+    init_db(db_path)
+    with connect(db_path) as conn:
+        assert lookup_policy(conn, Decimal("0")).policy_id == "TIER-AUTO"
+        assert lookup_policy(conn, Decimal("999.99")).policy_id == "TIER-AUTO"
+        assert lookup_policy(conn, Decimal("1000")).policy_id == "TIER-MGR"
+        assert lookup_policy(conn, Decimal("9999")).policy_id == "TIER-MGR"
+        assert lookup_policy(conn, Decimal("10000")).policy_id == "TIER-DIR"
+        assert lookup_policy(conn, Decimal("49999")).policy_id == "TIER-DIR"
+        assert lookup_policy(conn, Decimal("50000")).policy_id == "TIER-CFO"
+        assert lookup_policy(conn, Decimal("9999999")).policy_id == "TIER-CFO"
+
+
+def test_record_approval_round_trips(tmp_path):
+    from galatiq.db import list_approvals, record_approval
+
+    db_path = tmp_path / "inv.db"
+    init_db(db_path)
+    with connect(db_path) as conn:
+        record_approval(
+            conn,
+            invoice_number="INV-A",
+            vendor="Acme Corp",
+            status="auto_approved",
+            approver_role="system",
+            policy_id="TIER-AUTO",
+            total_usd=Decimal("42.00"),
+        )
+        rows = list_approvals(conn)
+    assert len(rows) == 1
+    assert rows[0]["status"] == "auto_approved"
+    assert rows[0]["policy_id"] == "TIER-AUTO"
+
+
+def test_record_payment_is_idempotent_on_reference(tmp_path):
+    from galatiq.db import list_payments, record_payment
+
+    db_path = tmp_path / "inv.db"
+    init_db(db_path)
+    with connect(db_path) as conn:
+        for _ in range(3):
+            record_payment(
+                conn,
+                reference="PAY-VEND-001-INV-X-ACH",
+                invoice_number="INV-X",
+                vendor="Acme Corp",
+                rail="ach",
+                status="scheduled",
+                amount_usd=Decimal("100"),
+                currency_paid="USD",
+                amount_paid=Decimal("100"),
+                scheduled_for="2026-02-01",
+                receipt_path="data/receipts/PAY-VEND-001-INV-X-ACH.txt",
+            )
+        rows = list_payments(conn)
+    assert len(rows) == 1
+    assert rows[0]["rail"] == "ach"
