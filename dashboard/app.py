@@ -338,8 +338,9 @@ _VERDICT_BADGE = {
 
 def _render_validation(path: Path) -> None:
     st.subheader("Validation report")
-    if not DB_PATH.exists():
-        st.warning("Reference DB not initialized. Use the sidebar button.")
+    ok, missing = _db_ready()
+    if not ok:
+        _render_db_not_ready(missing)
         return
     try:
         ing = ingest(path, allow_llm=True)
@@ -394,6 +395,32 @@ def _render_validation(path: Path) -> None:
             )
 
 
+_REQUIRED_TABLES = ("inventory", "vendors", "invoice_ledger", "approval_policies", "approval_log", "payment_log")
+
+
+def _db_ready() -> tuple[bool, list[str]]:
+    """Return (ok, missing_tables) for the dashboard's schema-drift guard."""
+    if not DB_PATH.exists():
+        return False, list(_REQUIRED_TABLES)
+    with connect(DB_PATH) as conn:
+        rows = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    present = {r["name"] for r in rows}
+    missing = [t for t in _REQUIRED_TABLES if t not in present]
+    return not missing, missing
+
+
+def _render_db_not_ready(missing: list[str]) -> None:
+    if missing == list(_REQUIRED_TABLES):
+        st.warning("Reference DB not initialized. Use **Initialize / refresh DB** in the sidebar.")
+    else:
+        st.warning(
+            "Reference DB is from an older schema and is missing tables: "
+            f"`{', '.join(missing)}`. Click **Initialize / refresh DB** in the sidebar to rebuild it."
+        )
+
+
 _APPROVAL_BADGE = {
     "auto_approved": ("✅ AUTO APPROVED", "success"),
     "pending_human": ("⏳ PENDING HUMAN", "warning"),
@@ -409,8 +436,9 @@ _PAYMENT_BADGE = {
 
 def _render_approval(path: Path) -> None:
     st.subheader("Approval decision")
-    if not DB_PATH.exists():
-        st.warning("Reference DB not initialized. Use the sidebar button.")
+    ok, missing = _db_ready()
+    if not ok:
+        _render_db_not_ready(missing)
         return
     try:
         ing = ingest(path, allow_llm=True)
@@ -466,8 +494,9 @@ def _render_approval(path: Path) -> None:
 
 def _render_payment(path: Path) -> None:
     st.subheader("Payment")
-    if not DB_PATH.exists():
-        st.warning("Reference DB not initialized. Use the sidebar button.")
+    ok, missing = _db_ready()
+    if not ok:
+        _render_db_not_ready(missing)
         return
 
     receipt_dir = REPO_ROOT / "data" / "receipts"
