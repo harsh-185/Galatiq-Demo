@@ -24,6 +24,7 @@ from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv(REPO_ROOT / ".env")
 
+from galatiq.agents.approval import approve  # noqa: E402
 from galatiq.agents.ingestion import ingest  # noqa: E402
 from galatiq.agents.validation import validate  # noqa: E402
 from galatiq.db import (  # noqa: E402
@@ -36,10 +37,13 @@ from galatiq.db import (  # noqa: E402
     connect,
     has_invoice,
     init_db,
+    list_approval_policies,
     list_inventory,
+    list_recent_decisions,
     list_vendors,
     lookup_item,
     lookup_vendor,
+    record_approval_decision,
     record_invoice,
 )
 from galatiq.io.readers import read_invoice  # noqa: E402
@@ -423,10 +427,7 @@ def main() -> None:
     with validation_tab:
         _render_validation(path)
     with approval_tab:
-        _render_stub(
-            "Approval",
-            "Will route to the right approver based on amount thresholds and vendor.",
-        )
+        _render_approval(path)
     with payment_tab:
         _render_stub(
             "Payment",
@@ -434,6 +435,112 @@ def main() -> None:
         )
     with db_tab:
         _render_reference_db()
+
+
+_DECISION_BADGE = {
+    "auto_approved": ("✅ AUTO-APPROVED", "success"),
+    "pending_human": ("⚠️ PENDING HUMAN APPROVAL", "warning"),
+    "rejected": ("❌ REJECTED", "error"),
+}
+
+
+def _render_approval(path: Path) -> None:
+    st.subheader("Approval decision")
+    if not DB_PATH.exists():
+        st.warning("Reference DB not initialized. Use the sidebar button.")
+        return
+    try:
+        ing = ingest(path, allow_llm=True)
+    except Exception as e:  # noqa: BLE001
+        st.error(f"Ingestion failed before approval could run: {type(e).__name__}: {e}")
+        return
+    invoice = ing.invoice
+    with connect(DB_PATH) as conn:
+        report = validate(invoice, conn=conn)
+        decision = approve(invoice, report, conn=conn, allow_llm=True)
+
+    label, kind = _DECISION_BADGE[decision.status]
+    {"success": st.success, "warning": st.warning, "error": st.error}[kind](
+        f"**{label}** — verdict: `{report.verdict}`"
+    )
+    cols = st.columns(4)
+    cols[0].metric("Approver", decision.approver_role or "—")
+    cols[1].metric("Policy", decision.policy_id or "—")
+    cols[2].metric(f"Total ({invoice.currency})", str(invoice.total))
+    cols[3].metric("USD-equivalent", str(decision.total_usd))
+
+    st.markdown("**Justification**")
+    st.info(decision.justification)
+
+    if decision.escalations:
+        st.markdown("**Escalations** (codes the reviewer should weigh)")
+        st.dataframe(
+            pd.DataFrame({"code": decision.escalations}),
+            hide_index=True,
+            width="stretch",
+        )
+
+    if decision.status == "pending_human":
+        st.markdown("---")
+        st.markdown("**Simulate human reviewer**")
+        col_a, col_b = st.columns(2)
+        if col_a.button("Approve", type="primary"):
+            with connect(DB_PATH) as conn:
+                record_approval_decision(
+                    conn,
+                    invoice_number=invoice.invoice_number,
+                    vendor=invoice.vendor,
+                    total=invoice.total,
+                    currency=invoice.currency,
+                    total_usd=decision.total_usd,
+                    verdict=report.verdict,
+                    status="auto_approved",
+                    approver_role=f"{decision.approver_role} (manual)",
+                    policy_id=decision.policy_id,
+                    justification="Manually approved via dashboard.",
+                )
+            st.success("Recorded manual approval in audit log.")
+        if col_b.button("Reject"):
+            with connect(DB_PATH) as conn:
+                record_approval_decision(
+                    conn,
+                    invoice_number=invoice.invoice_number,
+                    vendor=invoice.vendor,
+                    total=invoice.total,
+                    currency=invoice.currency,
+                    total_usd=decision.total_usd,
+                    verdict=report.verdict,
+                    status="rejected",
+                    approver_role=f"{decision.approver_role} (manual)",
+                    policy_id=decision.policy_id,
+                    justification="Manually rejected via dashboard.",
+                )
+            st.warning("Recorded manual rejection in audit log.")
+
+    with st.expander("Recent audit-log entries"):
+        with connect(DB_PATH) as conn:
+            rows = list_recent_decisions(conn, limit=15)
+        if rows:
+            st.dataframe(
+                pd.DataFrame(
+                    [
+                        {
+                            "decided_at": r["decided_at"],
+                            "invoice": r["invoice_number"],
+                            "vendor": r["vendor"],
+                            "verdict": r["verdict"],
+                            "status": r["status"],
+                            "approver": r["approver_role"] or "—",
+                            "usd": r["total_usd"] or "—",
+                        }
+                        for r in rows
+                    ]
+                ),
+                hide_index=True,
+                width="stretch",
+            )
+        else:
+            st.caption("No decisions recorded yet.")
 
 
 def _render_reference_db() -> None:
@@ -444,6 +551,24 @@ def _render_reference_db() -> None:
     with connect(DB_PATH) as conn:
         inventory = list_inventory(conn)
         vendors = list_vendors(conn)
+        policies = list_approval_policies(conn)
+    st.markdown("**Approval policies** (USD-equivalent thresholds)")
+    st.dataframe(
+        pd.DataFrame(
+            [
+                {
+                    "id": p.id,
+                    "min": str(p.threshold_min),
+                    "max": "∞" if p.threshold_max is None else str(p.threshold_max),
+                    "approver_role": p.approver_role or "auto-approve",
+                    "description": p.description or "—",
+                }
+                for p in policies
+            ]
+        ),
+        hide_index=True,
+        width="stretch",
+    )
     st.markdown("**Inventory**")
     st.dataframe(
         pd.DataFrame(

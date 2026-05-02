@@ -9,6 +9,7 @@ import typer
 from dotenv import load_dotenv
 
 from galatiq.agents.ingestion import ingest
+from galatiq.agents.pipeline import run_pipeline
 from galatiq.agents.validation import validate
 from galatiq.db import (
     DEFAULT_DB_PATH,
@@ -17,6 +18,7 @@ from galatiq.db import (
     connect,
     init_db,
     list_inventory,
+    list_recent_decisions,
     list_vendors,
     record_invoice,
 )
@@ -143,6 +145,60 @@ def validate_cmd(
         typer.echo("ledger      : recorded")
     if report.verdict == "reject":
         raise typer.Exit(code=1)
+
+
+_STATUS_EXIT = {"auto_approved": 0, "pending_human": 2, "rejected": 1}
+
+
+@app.command("approve")
+def approve_cmd(
+    invoice_path: Path = typer.Option(..., "--invoice_path", exists=True, readable=True),
+    db_path: Path = typer.Option(DEFAULT_DB_PATH, "--db", help="Path to the SQLite file"),
+    allow_llm: bool = typer.Option(True, "--llm/--no-llm"),
+) -> None:
+    """Run the full ingest -> validate -> approve pipeline on a single invoice."""
+    load_dotenv()
+    if not db_path.exists():
+        typer.echo(f"FAILED: reference DB not found at {db_path}; run `db-init` first", err=True)
+        raise typer.Exit(code=2)
+    state = run_pipeline(invoice_path, db_path=db_path, allow_llm=allow_llm)
+    if state.get("error"):
+        typer.echo(f"PIPELINE FAILED in {state.get('error_phase')}: {state['error']}", err=True)
+        raise typer.Exit(code=1)
+    invoice = state["invoice"]
+    report = state["validation"]
+    decision = state["approval"]
+    typer.echo(f"file        : {invoice_path.name}")
+    typer.echo(f"verdict     : {report.verdict.upper()}")
+    typer.echo(f"decision    : {decision.status.upper()}  approver={decision.approver_role or '—'}  policy={decision.policy_id or '—'}")
+    typer.echo(f"total       : {invoice.total} {invoice.currency}  (USD-eq {decision.total_usd})")
+    typer.echo(f"justification: {decision.justification}")
+    if decision.escalations:
+        typer.echo(f"escalations : {', '.join(decision.escalations)}")
+    raise typer.Exit(code=_STATUS_EXIT[decision.status])
+
+
+@app.command("audit-log")
+def audit_log_cmd(
+    db_path: Path = typer.Option(DEFAULT_DB_PATH, "--db"),
+    limit: int = typer.Option(20, "--limit"),
+) -> None:
+    """Print the most recent approval decisions."""
+    if not db_path.exists():
+        typer.echo(f"FAILED: reference DB not found at {db_path}", err=True)
+        raise typer.Exit(code=2)
+    with connect(db_path) as conn:
+        rows = list_recent_decisions(conn, limit=limit)
+    if not rows:
+        typer.echo("(no decisions recorded yet)")
+        return
+    typer.echo(f"{'when':<22} {'invoice':<10} {'vendor':<28} {'status':<14} {'role':<10} {'usd':>10}")
+    typer.echo("-" * 100)
+    for r in rows:
+        typer.echo(
+            f"{r['decided_at']:<22} {r['invoice_number']:<10} {(r['vendor'] or '')[:27]:<28} "
+            f"{r['status']:<14} {(r['approver_role'] or '—'):<10} {(r['total_usd'] or '—'):>10}"
+        )
 
 
 @app.command("db-init")
