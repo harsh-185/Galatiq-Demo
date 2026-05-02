@@ -61,48 +61,38 @@ _DDL = [
 ]
 
 SEED_INVENTORY: list[dict[str, Any]] = [
-    {"item": "WidgetA", "stock": 15, "unit_price": "10.00", "category": "hardware", "status": STATUS_ACTIVE},
-    {"item": "WidgetB", "stock": 10, "unit_price": "25.00", "category": "hardware", "status": STATUS_ACTIVE},
-    {"item": "GadgetX", "stock": 5,  "unit_price": "50.00", "category": "electronics", "status": STATUS_ACTIVE},
-    {"item": "FakeItem", "stock": 0, "unit_price": None,    "category": None,         "status": STATUS_FRAUD},
-    {"item": "GizmoPro", "stock": 100, "unit_price": "200.00", "category": "electronics", "status": STATUS_DISCONTINUED},
-    {"item": "BoltPack", "stock": 500, "unit_price": "5.00",   "category": "hardware",    "status": STATUS_ACTIVE},
-    {"item": "LaserCutterPro", "stock": 3, "unit_price": "25000.00", "category": "equipment", "status": STATUS_ACTIVE},
+    # Catalog prices match the modal price observed in the case fixtures so the
+    # documented "clean" invoices (INV-1001/1004/1006/...) pass without spurious
+    # price-drift warnings. The fixtures occasionally use volume-discount prices
+    # (e.g. WidgetA at $240) which sit comfortably under the 25% drift threshold.
+    {"item": "WidgetA",        "stock": 15,  "unit_price": "250.00",   "category": "hardware",    "status": STATUS_ACTIVE},
+    {"item": "WidgetB",        "stock": 10,  "unit_price": "500.00",   "category": "hardware",    "status": STATUS_ACTIVE},
+    {"item": "GadgetX",        "stock": 5,   "unit_price": "750.00",   "category": "electronics", "status": STATUS_ACTIVE},
+    {"item": "FakeItem",       "stock": 0,   "unit_price": None,        "category": None,          "status": STATUS_FRAUD},
+    # Stress-test SKUs not referenced by any fixture; useful for manual probing.
+    {"item": "GizmoPro",       "stock": 100, "unit_price": "200.00",   "category": "electronics", "status": STATUS_DISCONTINUED},
+    {"item": "BoltPack",       "stock": 500, "unit_price": "5.00",     "category": "hardware",    "status": STATUS_ACTIVE},
+    {"item": "LaserCutterPro", "stock": 3,   "unit_price": "25000.00", "category": "equipment",   "status": STATUS_ACTIVE},
 ]
 
 SEED_VENDORS: list[dict[str, Any]] = [
-    {
-        "vendor_id": "VEND-001",
-        "name": "Acme Corp",
-        "aliases": ["Acme", "Acme Co.", "ACME", "ACME Corp", "Acme Corporation"],
-        "address": "123 Acme St, Springfield",
-        "status": STATUS_ACTIVE,
-        "default_currency": "USD",
-    },
-    {
-        "vendor_id": "VEND-002",
-        "name": "Beta Industries",
-        "aliases": ["Beta Ind", "Beta", "Beta Industries Inc."],
-        "address": "456 Beta Ave",
-        "status": STATUS_ACTIVE,
-        "default_currency": "USD",
-    },
-    {
-        "vendor_id": "VEND-003",
-        "name": "ShadyVendor LLC",
-        "aliases": [],
-        "address": None,
-        "status": STATUS_BLOCKED,
-        "default_currency": "USD",
-    },
-    {
-        "vendor_id": "VEND-004",
-        "name": "NewCo",
-        "aliases": [],
-        "address": "789 Newcomer Rd",
-        "status": STATUS_NEW,
-        "default_currency": "USD",
-    },
+    # Vendors that appear in the case fixtures — seeded as active so legitimate
+    # invoices match by canonical name (or alias) and clear vendor_unknown.
+    {"vendor_id": "VEND-100", "name": "Widgets Inc.",                "aliases": ["Widgets", "Widgets Incorporated"], "address": None, "status": STATUS_ACTIVE, "default_currency": "USD"},
+    {"vendor_id": "VEND-101", "name": "Precision Parts Ltd.",        "aliases": ["Precision Parts"],                  "address": "742 Evergreen Terrace, Springfield, IL", "status": STATUS_ACTIVE, "default_currency": "USD"},
+    {"vendor_id": "VEND-102", "name": "Global Supply Chain Partners","aliases": ["Global Supply Chain"],              "address": None, "status": STATUS_ACTIVE, "default_currency": "USD"},
+    {"vendor_id": "VEND-103", "name": "Acme Industrial Supplies",    "aliases": ["Acme Industrial", "Acme Supplies"], "address": None, "status": STATUS_ACTIVE, "default_currency": "USD"},
+    {"vendor_id": "VEND-104", "name": "MegaWidgets Corp",            "aliases": ["MegaWidgets"],                      "address": None, "status": STATUS_ACTIVE, "default_currency": "USD"},
+    {"vendor_id": "VEND-105", "name": "Atlas Industrial Supply",     "aliases": ["Atlas Industrial"],                 "address": "500 Commerce Blvd, Detroit, MI", "status": STATUS_ACTIVE, "default_currency": "USD"},
+    {"vendor_id": "VEND-106", "name": "TechParts International",     "aliases": ["TechParts"],                        "address": None, "status": STATUS_ACTIVE, "default_currency": "EUR"},
+    {"vendor_id": "VEND-107", "name": "Reliable Components Inc.",    "aliases": ["Reliable Components"],              "address": None, "status": STATUS_ACTIVE, "default_currency": "USD"},
+    {"vendor_id": "VEND-108", "name": "Consolidated Materials Group","aliases": ["Consolidated Materials"],           "address": None, "status": STATUS_ACTIVE, "default_currency": "USD"},
+    {"vendor_id": "VEND-109", "name": "Summit Manufacturing Co.",    "aliases": ["Summit Manufacturing"],             "address": None, "status": STATUS_ACTIVE, "default_currency": "USD"},
+    # Known-bad vendor that pairs with the FakeItem fraud SKU in INV-1003.
+    {"vendor_id": "VEND-900", "name": "Fraudster LLC",               "aliases": [],                                   "address": None, "status": STATUS_BLOCKED, "default_currency": "USD"},
+    # Stress-test vendors not present in any fixture.
+    {"vendor_id": "VEND-901", "name": "ShadyVendor LLC",             "aliases": [],                                   "address": None, "status": STATUS_BLOCKED, "default_currency": "USD"},
+    {"vendor_id": "VEND-902", "name": "NewCo",                       "aliases": [],                                   "address": "789 Newcomer Rd", "status": STATUS_NEW, "default_currency": "USD"},
 ]
 
 

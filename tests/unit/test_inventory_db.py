@@ -46,7 +46,7 @@ def test_lookup_item_returns_full_row(tmp_path):
         fake = lookup_item(conn, "FakeItem")
         gizmo = lookup_item(conn, "GizmoPro")
         unknown = lookup_item(conn, "DoesNotExist")
-    assert widget is not None and widget.unit_price == Decimal("10.00") and widget.status == STATUS_ACTIVE
+    assert widget is not None and widget.unit_price == Decimal("250.00") and widget.status == STATUS_ACTIVE
     assert fake is not None and fake.status == STATUS_FRAUD and fake.unit_price is None
     assert gizmo is not None and gizmo.status == STATUS_DISCONTINUED
     assert unknown is None
@@ -65,13 +65,13 @@ def test_lookup_vendor_matches_canonical_and_alias(tmp_path):
     db_path = tmp_path / "inv.db"
     init_db(db_path)
     with connect(db_path) as conn:
-        canonical = lookup_vendor(conn, "Acme Corp")
-        alias = lookup_vendor(conn, "ACME")
-        case_insensitive = lookup_vendor(conn, "acme corporation")
+        canonical = lookup_vendor(conn, "Widgets Inc.")
+        alias = lookup_vendor(conn, "Widgets")
+        case_insensitive = lookup_vendor(conn, "widgets incorporated")
         unknown = lookup_vendor(conn, "Mystery Vendor")
-    assert canonical is not None and canonical.vendor_id == "VEND-001"
-    assert alias is not None and alias.vendor_id == "VEND-001"
-    assert case_insensitive is not None and case_insensitive.vendor_id == "VEND-001"
+    assert canonical is not None and canonical.vendor_id == "VEND-100"
+    assert alias is not None and alias.vendor_id == "VEND-100"
+    assert case_insensitive is not None and case_insensitive.vendor_id == "VEND-100"
     assert unknown is None
 
 
@@ -80,23 +80,25 @@ def test_lookup_vendor_surfaces_blocked_status(tmp_path):
     init_db(db_path)
     with connect(db_path) as conn:
         v = lookup_vendor(conn, "ShadyVendor LLC")
+        f = lookup_vendor(conn, "Fraudster LLC")
     assert v is not None and v.status == STATUS_BLOCKED
+    assert f is not None and f.status == STATUS_BLOCKED
 
 
 def test_invoice_ledger_dedup(tmp_path):
     db_path = tmp_path / "inv.db"
     init_db(db_path)
     with connect(db_path) as conn:
-        assert has_invoice(conn, "INV-1001", "Acme Corp") is False
+        assert has_invoice(conn, "INV-1001", "Widgets Inc.") is False
         record_invoice(
             conn,
             invoice_number="INV-1001",
-            vendor="Acme Corp",
+            vendor="Widgets Inc.",
             total=Decimal("250.00"),
             source_path="data/invoices/invoice_1001.txt",
         )
-        assert has_invoice(conn, "INV-1001", "Acme Corp") is True
-        assert has_invoice(conn, "INV-1001", "Beta Industries") is False
+        assert has_invoice(conn, "INV-1001", "Widgets Inc.") is True
+        assert has_invoice(conn, "INV-1001", "MegaWidgets Corp") is False
 
 
 def test_seed_is_idempotent(tmp_path):
