@@ -10,7 +10,6 @@ runs/
 *.log
 .DS_Store
 .claude/settings.local.json
-dashboard/
 node_modules/
 .next/
 dist/
