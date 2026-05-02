@@ -502,8 +502,52 @@ def _render_payment(path: Path) -> None:
         for n in record.notes:
             st.info(n)
 
+    fraud_findings = state.get("fraud_findings") or []
+    profile = state.get("vendor_profile")
+    risk = state.get("risk_assessment")
+    just = state.get("llm_justification")
+    llm_errs = state.get("llm_agent_errors") or []
+
+    if fraud_findings or profile or risk or just or llm_errs:
+        st.markdown("---")
+        st.markdown("**LLM specialists**")
+        if fraud_findings:
+            with st.expander(f"🕵️ Fraud screener — {len(fraud_findings)} finding(s)", expanded=True):
+                for f in fraud_findings:
+                    if f.severity == "warn":
+                        st.warning(f"`{f.code}` — {f.message}")
+                    else:
+                        st.info(f"`{f.code}` — {f.message}")
+        if profile is not None:
+            with st.expander("🏢 Vendor onboarding", expanded=True):
+                st.markdown(f"**Recommendation:** `{profile.recommendation}`")
+                st.write(profile.rationale)
+                if profile.suggested_aliases:
+                    st.write(f"Suggested aliases: {', '.join(profile.suggested_aliases)}")
+                if profile.default_currency_guess:
+                    st.write(f"Currency guess: `{profile.default_currency_guess}`")
+                if profile.normalized_address:
+                    st.write(f"Normalized address: {profile.normalized_address}")
+        if risk is not None:
+            with st.expander("🔍 Investigator — risk assessment", expanded=True):
+                st.markdown(f"**Severity:** {risk.severity_summary}")
+                st.markdown(f"**Hypothesis:** {risk.root_cause_hypothesis}")
+                st.markdown(f"**Recommended action:** `{risk.recommended_action}`")
+                if risk.items_to_verify:
+                    st.markdown("**Items to verify:**")
+                    for item in risk.items_to_verify:
+                        st.write(f"- {item}")
+        if just is not None:
+            with st.expander("📝 Audit narrative", expanded=True):
+                st.write(just.text)
+        if llm_errs:
+            with st.expander(f"⚠️ LLM fallbacks ({len(llm_errs)})"):
+                for e in llm_errs:
+                    st.caption(e)
+
     body = state.get("receipt_body")
     if record.status == "scheduled" and body:
+        st.markdown("---")
         st.markdown("**Receipt artifact**")
         st.code(body, language="text")
         st.caption(f"Written to `{record.receipt_path}`")

@@ -200,9 +200,16 @@ def pay_cmd(
     invoice_path: Path = typer.Option(..., "--invoice_path", exists=True, readable=True),
     db_path: Path = typer.Option(DEFAULT_DB_PATH, "--db", help="Path to the SQLite file"),
     receipts: Path = typer.Option(Path("data/receipts"), "--receipts", help="Where to write receipt files"),
+    llm_agents: bool | None = typer.Option(
+        None,
+        "--llm-agents/--no-llm-agents",
+        help="Force-enable or disable the LLM specialist agents (default: env-based)",
+    ),
 ) -> None:
-    """Run the full pipeline (ingest → validate → approve → pay) via LangGraph."""
+    """Run the full pipeline (ingest → fraud-screen → validate → … → pay) via LangGraph."""
     load_dotenv()
+    if llm_agents is not None:
+        os.environ["GALATIQ_LLM_AGENTS"] = "1" if llm_agents else "0"
     if not db_path.exists():
         typer.echo(f"FAILED: reference DB not found at {db_path}; run `db-init` first", err=True)
         raise typer.Exit(code=2)
@@ -217,7 +224,7 @@ def pay_cmd(
     payment = state["payment"]
     typer.echo(f"file        : {invoice_path.name}")
     typer.echo(f"ingestion   : {ing.path_taken} (retries={ing.llm_retries})")
-    typer.echo(f"verdict     : {report.verdict.upper()}")
+    typer.echo(f"verdict     : {report.verdict.upper()}  ({len(report.findings)} findings)")
     typer.echo(f"decision    : {decision.status.upper()}  (approver={decision.approver_role}, policy={decision.policy_id or '—'})")
     typer.echo(f"payment     : {payment.status.upper()}  rail={payment.rail}  ref={payment.reference}")
     typer.echo(f"amount      : {payment.amount_paid} {payment.currency_paid}  ({payment.amount_usd} USD)")
@@ -227,6 +234,43 @@ def pay_cmd(
     if payment.notes:
         for n in payment.notes:
             typer.echo(f"  note: {n}")
+
+    fraud_findings = state.get("fraud_findings") or []
+    if fraud_findings:
+        typer.echo("fraud screen:")
+        for f in fraud_findings:
+            typer.echo(f"  - [{f.severity}] {f.code} — {f.message}")
+
+    profile = state.get("vendor_profile")
+    if profile is not None:
+        typer.echo("vendor onboarding:")
+        typer.echo(f"  recommendation : {profile.recommendation}")
+        typer.echo(f"  rationale      : {profile.rationale}")
+        if profile.suggested_aliases:
+            typer.echo(f"  aliases        : {', '.join(profile.suggested_aliases)}")
+        if profile.default_currency_guess:
+            typer.echo(f"  currency guess : {profile.default_currency_guess}")
+
+    risk = state.get("risk_assessment")
+    if risk is not None:
+        typer.echo("risk assessment:")
+        typer.echo(f"  severity   : {risk.severity_summary}")
+        typer.echo(f"  hypothesis : {risk.root_cause_hypothesis}")
+        typer.echo(f"  recommend  : {risk.recommended_action}")
+        for item in risk.items_to_verify:
+            typer.echo(f"  verify  → {item}")
+
+    just = state.get("llm_justification")
+    if just is not None:
+        typer.echo("audit narrative:")
+        typer.echo(f"  {just.text}")
+
+    llm_errs = state.get("llm_agent_errors") or []
+    if llm_errs:
+        typer.echo("llm-agent fallbacks:")
+        for e in llm_errs:
+            typer.echo(f"  - {e}")
+
     if payment.status == "scheduled":
         return
     if payment.status == "skipped" and decision.status == "rejected":
