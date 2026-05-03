@@ -40,19 +40,61 @@ Output schema fields:
 - audit_narrative: 2-3 sentence plain prose, citing specific reviewer
   opinions or finding codes.
 
-Hard constraints:
+Decision rules:
 - If the rule engine produced ``rejected``, you MUST keep it rejected.
   (Rules own hard rejections.)
-- If the engine produced ``pending_human``, you may keep it pending or escalate
-  the tier (manager → director → cfo) — but you MUST NOT auto-approve.
 - If the engine produced ``auto_approved``, you may keep it OR downgrade to
   ``pending_human`` based on reviewer concerns.
-- Pick the most conservative reviewer verdict by default; only relax if
-  reviewers all say "approve".
+- If the engine produced ``pending_human`` (i.e. verdict was needs_review),
+  you have THREE options:
+    (a) Confirm pending_human and (optionally) escalate the tier when you
+        see material risk the rule engine missed.
+    (b) RESOLVE TO auto_approved when ALL reviewers verdict="approve" with
+        severity="low" AND none of the findings are load-bearing (vendor_blocked,
+        fraud_flag_sku, duplicate_invoice, stock_overflow, zero_stock,
+        negative_quantity, empty_vendor — these always force human review).
+        Use this when the council's investigation showed the warnings were
+        benign (e.g. unknown vendor that turned out to be a known alias,
+        currency drift that's intentional, etc.).
+    (c) RESOLVE TO rejected when reviewers found material concerns the rule
+        engine couldn't see (e.g. fraud reviewer flagged a typosquat with
+        high severity).
+  In short: the council is empowered to make the final call when its
+  investigation gives clear evidence either way. Defer to a human only when
+  you genuinely cannot decide.
 
 Be specific. Cite at least one reviewer (e.g. "the fraud reviewer noted X")
 or a finding code in the narrative.
 """
+
+# Findings the rule engine considers load-bearing — the aggregator cannot
+# auto-resolve a pending_human case when any of these are present, even if
+# the LLM tries. These map to errors that should always have a human eye.
+_LOAD_BEARING_FINDING_CODES = frozenset({
+    "vendor_blocked",
+    "fraud_flag_sku",
+    "duplicate_invoice",
+    "stock_overflow",
+    "zero_stock",
+    "negative_quantity",
+    "empty_vendor",
+    "subtotal_mismatch",
+    "total_mismatch",
+})
+
+
+def _council_is_unanimous_clean(opinions: list[ReviewerOpinion]) -> bool:
+    """Did every reviewer say 'approve' with severity='low'?
+
+    Empty opinions list is NOT unanimous — there's no signal to resolve on.
+    """
+    if not opinions:
+        return False
+    return all(o.verdict == "approve" and o.severity == "low" for o in opinions)
+
+
+def _has_load_bearing_finding(report: ValidationReport) -> bool:
+    return any(f.code in _LOAD_BEARING_FINDING_CODES for f in report.findings)
 
 
 class AggregatedDecision(BaseModel):
@@ -157,13 +199,19 @@ def aggregate(
             escalations=decision.escalations,
         )
     if report.verdict == "needs_review" and final.status == "auto_approved":
-        # The aggregator tried to auto-approve a needs_review; force human review.
-        final = ApprovalDecision(
-            status="pending_human",
-            approver_role=final.approver_role if final.approver_role != "system" else "manager",
-            policy_id=final.policy_id or "TIER-MGR",
-            total_usd=decision.total_usd,
-            justification=f"safety override: needs_review cannot auto-approve — {final.justification}",
-            escalations=decision.escalations,
-        )
+        # Allow the aggregator to resolve needs_review → auto_approved ONLY when:
+        #   • the council voted unanimous-clean (every reviewer approve+low), AND
+        #   • no load-bearing finding is present (vendor_blocked, fraud_flag_sku,
+        #     duplicate_invoice, stock_overflow, zero_stock, etc.)
+        # Otherwise force pending_human — the LLM doesn't get to override on
+        # cases the rule engine flagged with hard signals.
+        if not (_council_is_unanimous_clean(opinions) and not _has_load_bearing_finding(report)):
+            final = ApprovalDecision(
+                status="pending_human",
+                approver_role=final.approver_role if final.approver_role != "system" else "manager",
+                policy_id=final.policy_id or "TIER-MGR",
+                total_usd=decision.total_usd,
+                justification=f"safety override: needs_review cannot auto-approve without unanimous-clean council — {final.justification}",
+                escalations=decision.escalations,
+            )
     return final, aggregated.audit_narrative, err

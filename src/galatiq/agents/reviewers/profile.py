@@ -27,26 +27,26 @@ class CouncilProfile:
 _LITE = CouncilProfile(
     name="lite",
     reviewers=["fraud"],
-    max_tool_loops_per_reviewer=2,
-    rationale="small invoice; single-reviewer fraud check is sufficient",
+    max_tool_loops_per_reviewer=1,
+    rationale="small invoice; single-reviewer fraud check, single tool round",
 )
 _STANDARD = CouncilProfile(
     name="standard",
     reviewers=["compliance", "fraud", "policy"],
-    max_tool_loops_per_reviewer=3,
-    rationale="manager-tier invoice; full 3-reviewer council with standard tool budget",
+    max_tool_loops_per_reviewer=2,
+    rationale="manager-tier invoice; 3-reviewer council with tight tool budget (2 loops each)",
 )
 _DEEP = CouncilProfile(
     name="deep",
     reviewers=["compliance", "fraud", "policy"],
-    max_tool_loops_per_reviewer=4,
-    rationale="director-tier invoice; deeper tool budget per reviewer",
+    max_tool_loops_per_reviewer=3,
+    rationale="director-tier invoice; 3-reviewer council, deeper tool budget (3 loops each)",
 )
 _DEEPEST = CouncilProfile(
     name="deepest",
     reviewers=["compliance", "fraud", "policy"],
-    max_tool_loops_per_reviewer=6,
-    rationale="CFO-tier invoice; maximum scrutiny — extended tool budget per reviewer",
+    max_tool_loops_per_reviewer=4,
+    rationale="CFO-tier invoice; 3-reviewer council, max tool budget (4 loops each)",
 )
 
 
