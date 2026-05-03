@@ -143,7 +143,24 @@ def aggregate(
     decision: ApprovalDecision,
     opinions: list[ReviewerOpinion],
 ) -> tuple[ApprovalDecision, str, str | None]:
-    """Run the LLM aggregator. Returns ``(final_decision, narrative, error)``."""
+    """Run the LLM aggregator. Returns ``(final_decision, narrative, error)``.
+
+    When ``opinions`` is empty (council was skipped — clean small invoice or
+    hard reject) there's nothing for the LLM to synthesize. We use the
+    deterministic narrative path instead of burning a Grok call.
+    """
+    if not opinions:
+        aggregated = _fallback(decision, opinions)
+        final = ApprovalDecision(
+            status=aggregated.final_status,
+            approver_role=aggregated.final_approver_role,
+            policy_id=aggregated.final_policy_id,
+            total_usd=decision.total_usd,
+            justification=aggregated.audit_narrative,
+            escalations=decision.escalations,
+        )
+        return final, aggregated.audit_narrative, None
+
     payload = {
         "engine_decision": {
             "status": decision.status,

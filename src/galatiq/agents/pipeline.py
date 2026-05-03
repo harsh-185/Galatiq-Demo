@@ -76,6 +76,7 @@ from galatiq.db import (
     STATUS_ACTIVE,
     connect,
     has_invoice,
+    lookup_item,
     lookup_vendor,
     queue_for_human_review,
     record_approval,
@@ -146,6 +147,44 @@ def _ingest_node(state: PipelineState) -> PipelineState:
         return _emit(ev, ingestion=result)
 
 
+_SERIOUS_INGESTION_WARNINGS = frozenset({
+    "subtotal_mismatch", "total_mismatch", "negative_tax", "implausible_date",
+    "due_before_invoice_date", "empty_vendor", "excessive_tax",
+    "zero_unit_price", "zero_quantity",
+})
+
+
+def _can_skip_pre_approval(state: PipelineState) -> bool:
+    """Deterministic gate: skip the LLM screener when the invoice is structurally
+    clean enough that an LLM has nothing to find.
+
+    All of these must hold:
+      • no serious ingestion warning (math, dates, empty vendor)
+      • vendor known + active in DB
+      • every line item is in the catalog with status=active
+      • quantities are non-negative and within stock
+    """
+    ingestion = state.get("ingestion")
+    if not ingestion:
+        return False
+    invoice = ingestion.invoice
+    if any(w.code in _SERIOUS_INGESTION_WARNINGS for w in invoice.ingestion_warnings):
+        return False
+    with connect(state["db_path"]) as conn:
+        vendor = lookup_vendor(conn, invoice.vendor)
+        if vendor is None or vendor.status != STATUS_ACTIVE:
+            return False
+        for li in invoice.line_items:
+            if li.quantity < 0:
+                return False
+            item = lookup_item(conn, li.item)
+            if item is None or item.status != STATUS_ACTIVE:
+                return False
+            if li.quantity > item.stock:
+                return False
+    return True
+
+
 def _pre_approval_node(state: PipelineState) -> PipelineState:
     """Single merged screener: fraud findings + items_to_verify + vendor profile."""
     with stage_event("pre_approval_screener") as ev:
@@ -153,6 +192,16 @@ def _pre_approval_node(state: PipelineState) -> PipelineState:
             ev.status = "skipped"
             ev.summary = "no invoice (ingest failed upstream)"
             return _emit(ev)
+        if _can_skip_pre_approval(state):
+            ev.status = "skipped"
+            ev.summary = "skipped (deterministic gate: known active vendor + all items in catalog + within stock)"
+            from galatiq.agents.pre_approval_screener import PreApprovalSummary
+            return _emit(
+                ev,
+                pre_approval_summary=PreApprovalSummary(),
+                fraud_findings=[],
+                pre_approval_tool_trace=[],
+            )
         invoice = state["ingestion"].invoice
         db_path = state["db_path"]
         with connect(db_path) as conn:

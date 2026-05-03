@@ -83,7 +83,7 @@ def test_rejected_invoice_skips_payment(tmp_path, db_path, receipt_dir):
 
 
 def test_eur_invoice_routed_by_usd_total(tmp_path, db_path, receipt_dir):
-    # 950 EUR × 1.08 ≈ 1026 USD → manager band → pending_human → skipped
+    # 9300 EUR × 1.08 ≈ 10044 USD → above the $10k auto threshold → manager
     inv_path = _write(
         tmp_path / "eur.json",
         {
@@ -91,10 +91,10 @@ def test_eur_invoice_routed_by_usd_total(tmp_path, db_path, receipt_dir):
             "vendor": "Beta Industries",
             "date": "2026-01-01",
             "currency": "EUR",
-            "line_items": [{"item": "BoltPack", "quantity": 190, "unit_price": "5.00"}],
-            "subtotal": "950.00",
+            "line_items": [{"item": "WidgetA", "quantity": 15, "unit_price": "620.00"}],
+            "subtotal": "9300.00",
             "tax": "0.00",
-            "total": "950.00",
+            "total": "9300.00",
         },
     )
     state = run_pipeline(inv_path, db_path=db_path, receipt_dir=receipt_dir)
