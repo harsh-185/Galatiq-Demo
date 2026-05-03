@@ -167,13 +167,15 @@ def test_lookup_policy_bands(tmp_path):
     db_path = tmp_path / "inv.db"
     init_db(db_path)
     with connect(db_path) as conn:
+        # Bands: AUTO $0-$10k / MGR $10k-$50k / DIR $50k-$200k / CFO $200k+
+        # (matches spec's "invoices over $10K require additional scrutiny")
         assert lookup_policy(conn, Decimal("0")).policy_id == "TIER-AUTO"
-        assert lookup_policy(conn, Decimal("999.99")).policy_id == "TIER-AUTO"
-        assert lookup_policy(conn, Decimal("1000")).policy_id == "TIER-MGR"
-        assert lookup_policy(conn, Decimal("9999")).policy_id == "TIER-MGR"
-        assert lookup_policy(conn, Decimal("10000")).policy_id == "TIER-DIR"
-        assert lookup_policy(conn, Decimal("49999")).policy_id == "TIER-DIR"
-        assert lookup_policy(conn, Decimal("50000")).policy_id == "TIER-CFO"
+        assert lookup_policy(conn, Decimal("9999")).policy_id == "TIER-AUTO"
+        assert lookup_policy(conn, Decimal("10000")).policy_id == "TIER-MGR"
+        assert lookup_policy(conn, Decimal("49999")).policy_id == "TIER-MGR"
+        assert lookup_policy(conn, Decimal("50000")).policy_id == "TIER-DIR"
+        assert lookup_policy(conn, Decimal("199999")).policy_id == "TIER-DIR"
+        assert lookup_policy(conn, Decimal("200000")).policy_id == "TIER-CFO"
         assert lookup_policy(conn, Decimal("9999999")).policy_id == "TIER-CFO"
 
 

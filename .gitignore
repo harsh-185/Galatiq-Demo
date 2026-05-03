@@ -14,3 +14,7 @@ node_modules/
 .next/
 dist/
 build/
+
+# Generated payment receipts — pipeline writes these per scheduled payment.
+# Regenerated deterministically from invoice + decision; not version-controlled.
+data/receipts/
