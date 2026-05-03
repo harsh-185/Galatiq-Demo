@@ -54,19 +54,19 @@ class PaymentGuardReport:
 # --- merged LLM payment_review ---------------------------------------------
 
 
-_REVIEW_SYSTEM = """\
-You are the PAYMENT REVIEW AGENT. The deterministic banking validator has
-already run and you see its result. Your job is twofold:
+_REVIEW_SYSTEM_FULL = """\
+You review a proposed payment. Banking already validated. Tools:
+- recent_invoices_for_vendor(vendor, limit) — scan for near-duplicates
+- lookup_vendor / lookup_catalog_item — verify facts
+Decide one: approve_payment | switch_rail | block.
+Default approve_payment. Cite specific invoice numbers/amounts/dates in rationale. Concise.
+"""
 
-1. Scan recent ledger entries for the vendor and detect near-duplicates of
-   the current invoice (same amount + similar date, same line items reframed,
-   etc.). Use ``recent_invoices_for_vendor(vendor, limit)`` to inspect history.
-2. Decide whether to approve_payment, switch_rail (same vendor, different
-   rail), or block (near-dup detected, suspicious pattern, etc.).
 
-Be conservative. Default to approve_payment when nothing concrete is wrong.
-Cite specific facts (invoice numbers, amounts, dates) in your rationale.
-You may also call ``lookup_vendor`` and ``lookup_catalog_item`` if helpful.
+_REVIEW_SYSTEM_NARRATIVE = """\
+Write a 1-sentence rationale for this payment. Do not call tools.
+Set action='approve_payment' unless banking is broken (then set to a sensible action with rationale).
+Output the structured PaymentReview.
 """
 
 
@@ -161,33 +161,32 @@ def run_payment_guards(
         ).fetchone()
         has_history = row is not None
 
-    review_action = "skipped"
-    review_rationale = "no ledger history; skipped LLM review (deterministic pre-filter)"
-    review_trace: list[str] = []
-    near_dup_matches: list[str] = []
-
-    if has_history:
-        # 3. LLM payment_review (single tool-using call) -------------------
-        review, err, review_trace = _payment_review(
-            invoice, decision, proposed_rail, methods, db_path
+    # 3. ALWAYS run a payment_review LLM call so the audit trail has an
+    #    LLM-written rationale for every payment decision. Mode depends on
+    #    whether there's actually something to investigate:
+    #      - "full":      tool-using investigation (when ledger history exists)
+    #      - "narrative": single-shot, no tools, ~1-sentence rationale (otherwise)
+    review, err, review_trace = _payment_review(
+        invoice, decision, proposed_rail, methods, db_path,
+        mode="full" if has_history else "narrative",
+    )
+    review_action = review.action
+    review_rationale = review.rationale
+    near_dup_matches = list(review.near_dup_invoice_numbers)
+    if err:
+        err_summary.append(f"payment_review: {err}")
+    if review.has_near_duplicate:
+        blockers.append(
+            f"near-duplicate detected (matches: {', '.join(review.near_dup_invoice_numbers) or 'unspecified'}): {review.rationale}"
         )
-        review_action = review.action
-        review_rationale = review.rationale
-        near_dup_matches = list(review.near_dup_invoice_numbers)
-        if err:
-            err_summary.append(f"payment_review: {err}")
-        if review.has_near_duplicate:
-            blockers.append(
-                f"near-duplicate detected (matches: {', '.join(review.near_dup_invoice_numbers) or 'unspecified'}): {review.rationale}"
-            )
-        elif review.action == "block":
-            blockers.append(f"payment_review blocks: {review.rationale}")
-        elif review.action == "switch_rail" and review.suggested_rail:
-            warnings.append(
-                f"payment_review recommends rail switch to '{review.suggested_rail}': {review.rationale}"
-            )
-            if suggested_rail is None:
-                suggested_rail = review.suggested_rail
+    elif review.action == "block":
+        blockers.append(f"payment_review blocks: {review.rationale}")
+    elif review.action == "switch_rail" and review.suggested_rail:
+        warnings.append(
+            f"payment_review recommends rail switch to '{review.suggested_rail}': {review.rationale}"
+        )
+        if suggested_rail is None:
+            suggested_rail = review.suggested_rail
 
     approved = not blockers
     err = "; ".join(err_summary) if err_summary else None
@@ -213,30 +212,40 @@ def _payment_review(
     proposed_rail: str,
     methods: list,
     db_path: Path,
+    mode: Literal["full", "narrative"] = "full",
 ) -> tuple[_PaymentReview, str | None, list[str]]:
     payload = {
-        "invoice": invoice.model_dump(mode="json"),
-        "decision": {
-            "status": decision.status,
-            "approver_role": decision.approver_role,
-            "total_usd": str(decision.total_usd),
-            "currency": invoice.currency,
-        },
+        "invoice_number": invoice.invoice_number,
+        "vendor": invoice.vendor,
+        "currency": invoice.currency,
+        "total_usd": str(decision.total_usd),
         "proposed_rail": proposed_rail,
-        "registered_payment_methods": [
-            {"rail": m.rail, "status": m.status, "account_ref_present": m.account_ref is not None}
-            for m in methods
+        "registered_methods": [
+            {"rail": m.rail, "status": m.status} for m in methods
         ],
     }
+    if mode == "narrative":
+        # 1 LLM call, no tools. Just produces a rationale + action.
+        user = (
+            f"Write a payment-review rationale (no tools needed; no ledger history).\n"
+            f"```json\n{json.dumps(payload, default=str)}\n```"
+        )
+        review, err = _llm_helpers.run_llm_agent(
+            _PaymentReview,
+            system=_REVIEW_SYSTEM_NARRATIVE,
+            user=user,
+            fallback=_review_fallback,
+        )
+        return review, err, []  # no tool trace in narrative mode
+
+    # Full mode: tool-using ReAct loop for actual near-dup investigation.
     user = (
-        "Run a single payment review for this invoice. Use tools to scan "
-        "ledger history for near-duplicates, then decide approve_payment, "
-        "switch_rail, or block.\n\n"
-        f"```json\n{json.dumps(payload, indent=2, default=str)}\n```"
+        f"Investigate near-duplicates and decide approve_payment | switch_rail | block.\n"
+        f"```json\n{json.dumps(payload, default=str)}\n```"
     )
     return _llm_helpers.run_tool_using_agent(
         _PaymentReview,
-        system=_REVIEW_SYSTEM,
+        system=_REVIEW_SYSTEM_FULL,
         user=user,
         tools=build_investigator_tools(db_path),
         fallback=_review_fallback,
