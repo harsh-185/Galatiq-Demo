@@ -45,12 +45,14 @@ This module is the *only* place that writes to the reference DB or filesystem.
 """
 from __future__ import annotations
 
+import operator
 from dataclasses import replace
 from pathlib import Path
-from typing import TypedDict
+from typing import Annotated, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
+from galatiq.agents._walkthrough import StageEvent, stage_event
 from galatiq.agents.approval import ApprovalDecision, approve
 from galatiq.agents.ingestion import IngestionResult, ingest
 from galatiq.agents.payment import PaymentRecord, pay
@@ -88,6 +90,12 @@ _REVIEWER_FUNCS = {
 }
 
 
+def _emit(ev: StageEvent, **updates) -> dict:
+    """Bundle a node's state update with its walkthrough event so LangGraph's
+    operator.add reducer accumulates events across nodes."""
+    return {"walkthrough": [ev], **updates}
+
+
 class PipelineState(TypedDict, total=False):
     path: Path
     db_path: Path
@@ -110,73 +118,127 @@ class PipelineState(TypedDict, total=False):
     receipt_body: str | None
     errors: list[str]
     llm_agent_errors: list[str]
+    walkthrough: Annotated[list[StageEvent], operator.add]
 
 
 # --- nodes --------------------------------------------------------------------
 
 
 def _ingest_node(state: PipelineState) -> PipelineState:
-    try:
-        result = ingest(state["path"], allow_llm=True)
-    except Exception as e:  # noqa: BLE001
-        return {"errors": state.get("errors", []) + [f"ingestion: {type(e).__name__}: {e}"]}
-    return {"ingestion": result}
+    with stage_event("ingest") as ev:
+        try:
+            result = ingest(state["path"], allow_llm=True)
+        except Exception as e:  # noqa: BLE001
+            ev.status = "failed"
+            ev.summary = f"{type(e).__name__}: {e}"
+            return _emit(ev, errors=state.get("errors", []) + [f"ingestion: {type(e).__name__}: {e}"])
+        inv = result.invoice
+        ev.summary = (
+            f"path={result.path_taken} (retries={result.llm_retries})  "
+            f"vendor={inv.vendor!r}  total={inv.total} {inv.currency}  "
+            f"line_items={len(inv.line_items)}"
+        )
+        if inv.ingestion_warnings:
+            ev.details.append(f"{len(inv.ingestion_warnings)} ingestion warning(s)")
+            for w in inv.ingestion_warnings[:3]:
+                ev.details.append(f"  - {w.code}: {w.message}")
+        return _emit(ev, ingestion=result)
 
 
 def _pre_approval_node(state: PipelineState) -> PipelineState:
     """Single merged screener: fraud findings + items_to_verify + vendor profile."""
-    if state.get("ingestion") is None:
-        return {}
-    invoice = state["ingestion"].invoice
-    db_path = state["db_path"]
-    with connect(db_path) as conn:
-        summary, findings, err, trace = pre_approval_screen(invoice, conn=conn)
-    update: PipelineState = {
-        "pre_approval_summary": summary,
-        "fraud_findings": findings,
-        "pre_approval_tool_trace": trace,
-    }
-    if err:
-        update["llm_agent_errors"] = state.get("llm_agent_errors", []) + [f"pre_approval_screener: {err}"]
-    return update
+    with stage_event("pre_approval_screener") as ev:
+        if state.get("ingestion") is None:
+            ev.status = "skipped"
+            ev.summary = "no invoice (ingest failed upstream)"
+            return _emit(ev)
+        invoice = state["ingestion"].invoice
+        db_path = state["db_path"]
+        with connect(db_path) as conn:
+            summary, findings, err, trace = pre_approval_screen(invoice, conn=conn)
+        ev.tools_used = list(trace)
+        ev.summary = (
+            f"risk={summary.risk_severity}  fraud_findings={len(findings)}  "
+            f"items_to_verify={len(summary.items_to_verify)}  "
+            f"vendor_profile={'yes' if summary.vendor_profile else 'no'}"
+        )
+        if summary.risk_hypothesis:
+            ev.details.append(f"hypothesis: {summary.risk_hypothesis}")
+        for f in findings:
+            ev.details.append(f"finding: [{f.severity}] {f.code} — {f.message}")
+        if err:
+            ev.details.append(f"⚠ fallback: {err}")
+        update: PipelineState = {
+            "pre_approval_summary": summary,
+            "fraud_findings": findings,
+            "pre_approval_tool_trace": trace,
+        }
+        if err:
+            update["llm_agent_errors"] = state.get("llm_agent_errors", []) + [f"pre_approval_screener: {err}"]
+        return _emit(ev, **update)
 
 
 def _validate_node(state: PipelineState) -> PipelineState:
-    if state.get("ingestion") is None:
-        return {}
-    invoice = state["ingestion"].invoice
-    db_path = state["db_path"]
-    fraud_findings = state.get("fraud_findings") or []
+    with stage_event("validate") as ev:
+        if state.get("ingestion") is None:
+            ev.status = "skipped"
+            return _emit(ev)
+        invoice = state["ingestion"].invoice
+        db_path = state["db_path"]
+        fraud_findings = state.get("fraud_findings") or []
 
-    with connect(db_path) as conn:
-        report = validate(invoice, conn=conn)
-        for f in fraud_findings:
-            report.add(f)
-        if fraud_findings:
-            report.verdict = derive_verdict(report.findings)
+        with connect(db_path) as conn:
+            report = validate(invoice, conn=conn)
+            for f in fraud_findings:
+                report.add(f)
+            if fraud_findings:
+                report.verdict = derive_verdict(report.findings)
 
-        if report.verdict == "pass" and not has_invoice(
-            conn, invoice.invoice_number, invoice.vendor
-        ):
-            record_invoice(
-                conn,
-                invoice_number=invoice.invoice_number,
-                vendor=invoice.vendor,
-                total=invoice.total,
-                source_path=str(state["path"]),
-            )
-    return {"report": report}
+            recorded_to_ledger = False
+            if report.verdict == "pass" and not has_invoice(
+                conn, invoice.invoice_number, invoice.vendor
+            ):
+                record_invoice(
+                    conn,
+                    invoice_number=invoice.invoice_number,
+                    vendor=invoice.vendor,
+                    total=invoice.total,
+                    source_path=str(state["path"]),
+                )
+                recorded_to_ledger = True
+
+        sev_count = report.by_severity()
+        ev.summary = (
+            f"verdict={report.verdict.upper()}  "
+            f"errors={len(sev_count['error'])}  warns={len(sev_count['warn'])}  "
+            f"info={len(sev_count['info'])}"
+        )
+        for f in report.findings[:5]:
+            ev.details.append(f"[{f.severity}] {f.code} — {f.message}")
+        if len(report.findings) > 5:
+            ev.details.append(f"… and {len(report.findings) - 5} more findings")
+        if recorded_to_ledger:
+            ev.details.append("⛁ recorded to invoice_ledger")
+        return _emit(ev, report=report)
 
 
 def _approve_node(state: PipelineState) -> PipelineState:
-    if state.get("ingestion") is None or state.get("report") is None:
-        return {}
-    invoice = state["ingestion"].invoice
-    report = state["report"]
-    db_path = state["db_path"]
-    with connect(db_path) as conn:
-        decision = approve(invoice, report, conn=conn)
-    return {"pre_council_decision": decision, "decision": decision}
+    with stage_event("approve") as ev:
+        if state.get("ingestion") is None or state.get("report") is None:
+            ev.status = "skipped"
+            return _emit(ev)
+        invoice = state["ingestion"].invoice
+        report = state["report"]
+        db_path = state["db_path"]
+        with connect(db_path) as conn:
+            decision = approve(invoice, report, conn=conn)
+        ev.summary = (
+            f"{decision.status.upper()}  approver={decision.approver_role}  "
+            f"policy={decision.policy_id or '—'}  total_usd=${decision.total_usd}"
+        )
+        if decision.escalations:
+            ev.details.append(f"escalations: {', '.join(decision.escalations)}")
+        return _emit(ev, pre_council_decision=decision, decision=decision)
 
 
 def _can_skip_council(state: PipelineState) -> bool:
@@ -210,50 +272,65 @@ def _can_skip_council(state: PipelineState) -> bool:
 
 def _council_node(state: PipelineState) -> PipelineState:
     """Run the tier-scaled council, OR skip when deterministic gate allows."""
-    if state.get("ingestion") is None or state.get("decision") is None or state.get("report") is None:
-        return {}
-    decision = state["decision"]
-    if decision.status == "rejected":
-        # Hard rejects skip the council to save LLM compute.
-        return {"council_profile": None, "reviewer_opinions": [], "reviewer_traces": {}, "council_skipped": True}
+    with stage_event("council") as ev:
+        if state.get("ingestion") is None or state.get("decision") is None or state.get("report") is None:
+            ev.status = "skipped"
+            return _emit(ev)
+        decision = state["decision"]
+        if decision.status == "rejected":
+            ev.status = "skipped"
+            ev.summary = "skipped (rule engine rejected — rules own hard rejects)"
+            return _emit(ev, council_profile=None, reviewer_opinions=[], reviewer_traces={}, council_skipped=True)
 
-    if _can_skip_council(state):
-        return {"council_profile": None, "reviewer_opinions": [], "reviewer_traces": {}, "council_skipped": True}
+        if _can_skip_council(state):
+            ev.status = "skipped"
+            ev.summary = "skipped (deterministic gate: clean small invoice + known active vendor)"
+            return _emit(ev, council_profile=None, reviewer_opinions=[], reviewer_traces={}, council_skipped=True)
 
-    invoice = state["ingestion"].invoice
-    report = state["report"]
-    profile = select_profile(decision.policy_id)
-    summary = state.get("pre_approval_summary")
-    db_path = state["db_path"]
-    opinions: list[ReviewerOpinion] = []
-    traces: dict[str, list[str]] = {}
-    errors: list[str] = []
+        invoice = state["ingestion"].invoice
+        report = state["report"]
+        profile = select_profile(decision.policy_id)
+        summary = state.get("pre_approval_summary")
+        db_path = state["db_path"]
+        opinions: list[ReviewerOpinion] = []
+        traces: dict[str, list[str]] = {}
+        errors: list[str] = []
 
-    with connect(db_path) as conn:
-        for reviewer_name in profile.reviewers:
-            review_fn = _REVIEWER_FUNCS[reviewer_name]
-            opinion, err, trace = review_fn(
-                invoice,
-                report,
-                decision,
-                conn=conn,
-                pre_approval_summary=summary,
-                max_tool_loops=profile.max_tool_loops_per_reviewer,
-            )
-            opinions.append(opinion)
-            traces[reviewer_name] = trace
-            if err:
-                errors.append(f"{reviewer_name}_reviewer: {err}")
+        with connect(db_path) as conn:
+            for reviewer_name in profile.reviewers:
+                review_fn = _REVIEWER_FUNCS[reviewer_name]
+                opinion, err, trace = review_fn(
+                    invoice,
+                    report,
+                    decision,
+                    conn=conn,
+                    pre_approval_summary=summary,
+                    max_tool_loops=profile.max_tool_loops_per_reviewer,
+                )
+                opinions.append(opinion)
+                traces[reviewer_name] = trace
+                if err:
+                    errors.append(f"{reviewer_name}_reviewer: {err}")
 
-    update: PipelineState = {
-        "council_profile": profile,
-        "reviewer_opinions": opinions,
-        "reviewer_traces": traces,
-        "council_skipped": False,
-    }
-    if errors:
-        update["llm_agent_errors"] = state.get("llm_agent_errors", []) + errors
-    return update
+        ev.summary = (
+            f"profile={profile.name}  reviewers={len(profile.reviewers)}  "
+            f"max_tool_loops/reviewer={profile.max_tool_loops_per_reviewer}"
+        )
+        for op in opinions:
+            ev.details.append(f"[{op.reviewer}/{op.severity}] {op.verdict}: {op.rationale}")
+        for reviewer_name, trace in traces.items():
+            for t in trace:
+                ev.tools_used.append(f"{reviewer_name}.{t}")
+
+        update: PipelineState = {
+            "council_profile": profile,
+            "reviewer_opinions": opinions,
+            "reviewer_traces": traces,
+            "council_skipped": False,
+        }
+        if errors:
+            update["llm_agent_errors"] = state.get("llm_agent_errors", []) + errors
+        return _emit(ev, **update)
 
 
 def _aggregator_node(state: PipelineState) -> PipelineState:
@@ -263,125 +340,173 @@ def _aggregator_node(state: PipelineState) -> PipelineState:
     skipped (clean small invoice or hard reject), falls into the deterministic
     aggregation path which preserves the rule decision.
     """
-    if state.get("ingestion") is None or state.get("decision") is None or state.get("report") is None:
-        return {}
-    invoice = state["ingestion"].invoice
-    report = state["report"]
-    pre = state.get("pre_council_decision") or state["decision"]
-    opinions = state.get("reviewer_opinions") or []
+    with stage_event("aggregator") as ev:
+        if state.get("ingestion") is None or state.get("decision") is None or state.get("report") is None:
+            ev.status = "skipped"
+            return _emit(ev)
+        invoice = state["ingestion"].invoice
+        report = state["report"]
+        pre = state.get("pre_council_decision") or state["decision"]
+        opinions = state.get("reviewer_opinions") or []
 
-    final, narrative, err = aggregate(invoice, report, pre, opinions)
+        final, narrative, err = aggregate(invoice, report, pre, opinions)
 
-    db_path = state["db_path"]
-    with connect(db_path) as conn:
-        record_approval(
-            conn,
-            invoice_number=invoice.invoice_number,
-            vendor=invoice.vendor,
-            status=final.status,
-            approver_role=final.approver_role,
-            policy_id=final.policy_id,
-            total_usd=final.total_usd,
-        )
+        db_path = state["db_path"]
+        with connect(db_path) as conn:
+            record_approval(
+                conn,
+                invoice_number=invoice.invoice_number,
+                vendor=invoice.vendor,
+                status=final.status,
+                approver_role=final.approver_role,
+                policy_id=final.policy_id,
+                total_usd=final.total_usd,
+            )
 
-    update: PipelineState = {"decision": final, "audit_narrative": narrative}
-    if err:
-        update["llm_agent_errors"] = state.get("llm_agent_errors", []) + [f"aggregator: {err}"]
-    return update
+        if (pre.status, pre.policy_id) != (final.status, final.policy_id):
+            ev.summary = f"OVERRIDE  {pre.status} → {final.status}  ({final.approver_role}, {final.policy_id or '—'})"
+        else:
+            ev.summary = f"{final.status.upper()}  ({final.approver_role}, {final.policy_id or '—'})  ⛁ recorded"
+        if narrative:
+            ev.details.append(f"narrative: {narrative}")
+        if err:
+            ev.details.append(f"⚠ fallback: {err}")
+
+        update: PipelineState = {"decision": final, "audit_narrative": narrative}
+        if err:
+            update["llm_agent_errors"] = state.get("llm_agent_errors", []) + [f"aggregator: {err}"]
+        return _emit(ev, **update)
 
 
 def _hitl_queue_node(state: PipelineState) -> PipelineState:
     """Write a human-review-queue entry for any pending_human decision."""
-    if state.get("decision") is None or state.get("ingestion") is None:
-        return {}
-    decision = state["decision"]
-    if decision.status != "pending_human":
-        return {}
-    invoice = state["ingestion"].invoice
-    with connect(state["db_path"]) as conn:
-        review_id = queue_for_human_review(
-            conn,
-            invoice_number=invoice.invoice_number,
-            vendor=invoice.vendor,
-            decision_status=decision.status,
-            approver_role=decision.approver_role,
-            policy_id=decision.policy_id,
-            total_usd=decision.total_usd,
-            source_path=str(state["path"]),
-            narrative=state.get("audit_narrative"),
-        )
-    return {"human_review_id": review_id}
+    with stage_event("hitl_queue") as ev:
+        if state.get("decision") is None or state.get("ingestion") is None:
+            ev.status = "skipped"
+            return _emit(ev)
+        decision = state["decision"]
+        if decision.status != "pending_human":
+            ev.status = "skipped"
+            ev.summary = f"skipped (decision={decision.status}, no human review needed)"
+            return _emit(ev)
+        invoice = state["ingestion"].invoice
+        with connect(state["db_path"]) as conn:
+            review_id = queue_for_human_review(
+                conn,
+                invoice_number=invoice.invoice_number,
+                vendor=invoice.vendor,
+                decision_status=decision.status,
+                approver_role=decision.approver_role,
+                policy_id=decision.policy_id,
+                total_usd=decision.total_usd,
+                source_path=str(state["path"]),
+                narrative=state.get("audit_narrative"),
+            )
+        ev.summary = f"⛁ queued review id={review_id} for {decision.approver_role}"
+        ev.details.append(f"resolve with: human resolve --id {review_id} --action approve|reject")
+        return _emit(ev, human_review_id=review_id)
 
 
 def _payment_guards_node(state: PipelineState) -> PipelineState:
-    if state.get("ingestion") is None or state.get("decision") is None:
-        return {}
-    decision = state["decision"]
-    if decision.status != "auto_approved":
-        return {}
-    invoice = state["ingestion"].invoice
-    with connect(state["db_path"]) as conn:
-        vendor = lookup_vendor(conn, invoice.vendor)
-        report, err = run_payment_guards(invoice, decision, vendor=vendor, conn=conn)
-    update: PipelineState = {"payment_guard_report": report}
-    if err:
-        update["llm_agent_errors"] = state.get("llm_agent_errors", []) + [f"payment_guards: {err}"]
-    return update
+    with stage_event("payment_guards") as ev:
+        if state.get("ingestion") is None or state.get("decision") is None:
+            ev.status = "skipped"
+            return _emit(ev)
+        decision = state["decision"]
+        if decision.status != "auto_approved":
+            ev.status = "skipped"
+            ev.summary = f"skipped (decision={decision.status}, no payment to guard)"
+            return _emit(ev)
+        invoice = state["ingestion"].invoice
+        with connect(state["db_path"]) as conn:
+            vendor = lookup_vendor(conn, invoice.vendor)
+            report, err = run_payment_guards(invoice, decision, vendor=vendor, conn=conn)
+        ev.summary = (
+            f"approved={report.approved}  banking={report.payment_method_status}  "
+            f"review={report.review_action}"
+        )
+        ev.tools_used = list(report.review_trace)
+        for b in report.blockers:
+            ev.details.append(f"BLOCKER: {b}")
+        for w in report.warnings:
+            ev.details.append(f"warn: {w}")
+        if report.suggested_rail:
+            ev.details.append(f"suggested rail: {report.suggested_rail}")
+        if report.near_dup_matches:
+            ev.details.append(f"near-dup matches: {', '.join(report.near_dup_matches)}")
+        update: PipelineState = {"payment_guard_report": report}
+        if err:
+            update["llm_agent_errors"] = state.get("llm_agent_errors", []) + [f"payment_guards: {err}"]
+        return _emit(ev, **update)
 
 
 def _pay_node(state: PipelineState) -> PipelineState:
-    if state.get("ingestion") is None or state.get("decision") is None:
-        return {}
-    invoice = state["ingestion"].invoice
-    decision = state["decision"]
-    db_path = state["db_path"]
-    receipt_dir = state.get("receipt_dir") or DEFAULT_RECEIPT_DIR
-    guard_report = state.get("payment_guard_report")
+    with stage_event("pay") as ev:
+        if state.get("ingestion") is None or state.get("decision") is None:
+            ev.status = "skipped"
+            return _emit(ev)
+        invoice = state["ingestion"].invoice
+        decision = state["decision"]
+        db_path = state["db_path"]
+        receipt_dir = state.get("receipt_dir") or DEFAULT_RECEIPT_DIR
+        guard_report = state.get("payment_guard_report")
 
-    with connect(db_path) as conn:
-        vendor = lookup_vendor(conn, invoice.vendor)
-        record = pay(invoice, decision, vendor=vendor)
+        with connect(db_path) as conn:
+            vendor = lookup_vendor(conn, invoice.vendor)
+            record = pay(invoice, decision, vendor=vendor)
 
-        if record.status == "scheduled" and guard_report is not None:
-            if not guard_report.approved:
-                record = replace(
-                    record,
-                    status="failed",
-                    rail="none",
-                    notes=record.notes + [f"guard blocker: {b}" for b in guard_report.blockers],
-                )
-            elif guard_report.suggested_rail and guard_report.suggested_rail != record.rail:
-                new_rail = guard_report.suggested_rail
-                record = replace(
-                    record,
-                    rail=new_rail,
-                    reference=record.reference.rsplit("-", 1)[0] + "-" + new_rail.upper(),
-                    notes=record.notes + [f"guard rail switch → {new_rail}"],
-                )
+            if record.status == "scheduled" and guard_report is not None:
+                if not guard_report.approved:
+                    record = replace(
+                        record,
+                        status="failed",
+                        rail="none",
+                        notes=record.notes + [f"guard blocker: {b}" for b in guard_report.blockers],
+                    )
+                elif guard_report.suggested_rail and guard_report.suggested_rail != record.rail:
+                    new_rail = guard_report.suggested_rail
+                    record = replace(
+                        record,
+                        rail=new_rail,
+                        reference=record.reference.rsplit("-", 1)[0] + "-" + new_rail.upper(),
+                        notes=record.notes + [f"guard rail switch → {new_rail}"],
+                    )
 
-        receipt_body: str | None = None
-        receipt_path: str | None = None
-        if record.status == "scheduled":
-            receipt_body = render_receipt(invoice, decision, record)
-            written = write_receipt(record, receipt_body, directory=Path(receipt_dir))
-            receipt_path = str(written)
-            record = replace(record, receipt_path=receipt_path)
+            receipt_body: str | None = None
+            receipt_path: str | None = None
+            if record.status == "scheduled":
+                receipt_body = render_receipt(invoice, decision, record)
+                written = write_receipt(record, receipt_body, directory=Path(receipt_dir))
+                receipt_path = str(written)
+                record = replace(record, receipt_path=receipt_path)
 
-        record_payment(
-            conn,
-            reference=record.reference,
-            invoice_number=invoice.invoice_number,
-            vendor=invoice.vendor,
-            rail=record.rail,
-            status=record.status,
-            amount_usd=record.amount_usd,
-            currency_paid=record.currency_paid,
-            amount_paid=record.amount_paid,
-            scheduled_for=record.scheduled_for.isoformat() if record.scheduled_for else None,
-            receipt_path=receipt_path,
+            record_payment(
+                conn,
+                reference=record.reference,
+                invoice_number=invoice.invoice_number,
+                vendor=invoice.vendor,
+                rail=record.rail,
+                status=record.status,
+                amount_usd=record.amount_usd,
+                currency_paid=record.currency_paid,
+                amount_paid=record.amount_paid,
+                scheduled_for=record.scheduled_for.isoformat() if record.scheduled_for else None,
+                receipt_path=receipt_path,
+            )
+
+        ev.summary = (
+            f"{record.status.upper()}  rail={record.rail}  "
+            f"ref={record.reference}  amount={record.amount_paid} {record.currency_paid}"
         )
+        if record.scheduled_for:
+            ev.details.append(f"scheduled_for: {record.scheduled_for}")
+        if receipt_path:
+            ev.details.append(f"⛁ receipt: {receipt_path}")
+        for n in record.notes:
+            ev.details.append(f"note: {n}")
+        ev.details.append(f"⛁ payment_log row keyed on {record.reference}")
 
-    return {"payment": record, "receipt_body": receipt_body}
+        return _emit(ev, payment=record, receipt_body=receipt_body)
 
 
 # --- graph --------------------------------------------------------------------
@@ -427,6 +552,7 @@ def run_pipeline(
         "receipt_dir": Path(receipt_dir),
         "errors": [],
         "llm_agent_errors": [],
+        "walkthrough": [],
     }
     final: PipelineState = _GRAPH.invoke(initial)
     return final

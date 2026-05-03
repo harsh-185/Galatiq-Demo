@@ -9,6 +9,7 @@ breaks because of an LLM agent.
 from __future__ import annotations
 
 import os
+from contextvars import ContextVar
 from typing import Any, Callable, TypeVar
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
@@ -16,6 +17,25 @@ from pydantic import BaseModel
 
 from galatiq.llm.client import LLMUnavailable, get_chat_model
 from galatiq.llm.structured import extract_structured
+
+# Per-run LLM call counter. The pipeline resets it per stage so each node can
+# report its own LLM usage. Defaults to None outside a tracked scope.
+_llm_call_counter: ContextVar[int | None] = ContextVar("_llm_call_counter", default=None)
+
+
+def reset_llm_call_counter() -> None:
+    _llm_call_counter.set(0)
+
+
+def get_llm_call_count() -> int:
+    return _llm_call_counter.get() or 0
+
+
+def _bump_llm_call_count(n: int = 1) -> None:
+    cur = _llm_call_counter.get()
+    if cur is None:
+        return  # not tracked outside a scope
+    _llm_call_counter.set(cur + n)
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -48,7 +68,8 @@ def run_llm_agent(
     if not llm_agents_enabled():
         return fallback(), None
     try:
-        result, _retries = extract_structured(schema, system=system, user=user)
+        result, retries = extract_structured(schema, system=system, user=user)
+        _bump_llm_call_count(1 + retries)  # 1 call + N retries
         return result, None
     except LLMUnavailable as e:
         return fallback(), f"llm unavailable: {e}"
@@ -85,6 +106,7 @@ def run_tool_using_agent(
 
         for _ in range(max_tool_loops):
             ai: AIMessage = llm.invoke(messages)
+            _bump_llm_call_count(1)
             messages.append(ai)
             calls = getattr(ai, "tool_calls", None) or []
             if not calls:
@@ -116,6 +138,7 @@ def run_tool_using_agent(
             )
         )
         final = structured.invoke(messages)
+        _bump_llm_call_count(1)
         if not isinstance(final, schema):
             final = schema.model_validate(final)
         return final, None, trace

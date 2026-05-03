@@ -8,6 +8,7 @@ from pathlib import Path
 import typer
 from dotenv import load_dotenv
 
+from galatiq.agents._walkthrough import render_walkthrough, summary_stats
 from galatiq.agents.approval import ApprovalDecision, approve
 from galatiq.agents.ingestion import ingest
 from galatiq.agents.payment import pay as pay_agent
@@ -226,96 +227,57 @@ def pay_cmd(
         for err in state["errors"]:
             typer.echo(f"ERROR: {err}", err=True)
         raise typer.Exit(code=1)
-    ing = state["ingestion"]
-    report = state["report"]
+
     decision = state["decision"]
     payment = state["payment"]
-    typer.echo(f"file        : {invoice_path.name}")
-    typer.echo(f"ingestion   : {ing.path_taken} (retries={ing.llm_retries})")
-    typer.echo(f"verdict     : {report.verdict.upper()}  ({len(report.findings)} findings)")
-    typer.echo(f"decision    : {decision.status.upper()}  (approver={decision.approver_role}, policy={decision.policy_id or '—'})")
-    typer.echo(f"payment     : {payment.status.upper()}  rail={payment.rail}  ref={payment.reference}")
-    typer.echo(f"amount      : {payment.amount_paid} {payment.currency_paid}  ({payment.amount_usd} USD)")
-    typer.echo(f"scheduled   : {payment.scheduled_for or '—'}")
+
+    # ── Stage-by-stage walkthrough ──────────────────────────────────────────
+    walkthrough = state.get("walkthrough") or []
+    typer.echo("")
+    typer.echo(f"📄 Invoice: {invoice_path.name}")
+    typer.echo(render_walkthrough(walkthrough))
+
+    # ── Final summary ───────────────────────────────────────────────────────
+    stats = summary_stats(walkthrough)
+    typer.echo("")
+    typer.echo("━" * 60)
+    typer.echo("Summary")
+    typer.echo("━" * 60)
+    outcome_marker = {
+        "scheduled": "✅",
+        "skipped":   "⏭ ",
+        "failed":    "❌",
+    }.get(payment.status, "•")
+    typer.echo(
+        f"{outcome_marker} payment {payment.status.upper()}  "
+        f"rail={payment.rail}  ref={payment.reference}"
+    )
+    typer.echo(
+        f"   decision: {decision.status} ({decision.approver_role}, "
+        f"{decision.policy_id or '—'})  total_usd=${decision.total_usd}"
+    )
     if payment.receipt_path:
-        typer.echo(f"receipt     : {payment.receipt_path}")
-    if payment.notes:
-        for n in payment.notes:
-            typer.echo(f"  note: {n}")
-
-    summary = state.get("pre_approval_summary")
-    pre_trace = state.get("pre_approval_tool_trace") or []
-    if summary is not None and (
-        summary.fraud_findings or summary.items_to_verify or summary.risk_severity != "none" or summary.vendor_profile
-    ):
-        typer.echo(f"pre-approval : risk={summary.risk_severity}  {summary.risk_hypothesis}")
-        for call in pre_trace[:5]:
-            typer.echo(f"  tool → {call}")
-        for f in summary.fraud_findings:
-            typer.echo(f"  - [{f.severity}] {f.code} — {f.message}")
-        for item in summary.items_to_verify:
-            typer.echo(f"  verify → {item}")
-        if summary.vendor_profile:
-            vp = summary.vendor_profile
-            typer.echo(f"  vendor profile: {vp.recommendation} — {vp.rationale}")
-            if vp.suggested_aliases:
-                typer.echo(f"    aliases: {', '.join(vp.suggested_aliases)}")
-            if vp.default_currency_guess:
-                typer.echo(f"    currency guess: {vp.default_currency_guess}")
-
-    if state.get("council_skipped"):
-        typer.echo("council      : skipped (clean small invoice — deterministic gate)")
-
-    profile_obj = state.get("council_profile")
-    opinions = state.get("reviewer_opinions") or []
-    reviewer_traces = state.get("reviewer_traces") or {}
-    pre_council = state.get("pre_council_decision")
-    if profile_obj is not None or opinions:
-        if profile_obj is not None:
-            typer.echo(f"council      : profile={profile_obj.name}  reviewers={','.join(profile_obj.reviewers) or '(none)'}")
-            typer.echo(f"               {profile_obj.rationale}")
-        for op in opinions:
-            typer.echo(f"  [{op.reviewer}/{op.severity}] {op.verdict}: {op.rationale}")
-            for c in op.concerns[:3]:
-                typer.echo(f"    concern: {c}")
-            tr = reviewer_traces.get(op.reviewer) or []
-            for t in tr[:5]:
-                typer.echo(f"    tool → {t}")
-
-    if pre_council is not None and (pre_council.status, pre_council.policy_id) != (decision.status, decision.policy_id):
-        typer.echo("aggregator override:")
-        typer.echo(f"  pre  : {pre_council.status} ({pre_council.approver_role}, {pre_council.policy_id or '—'})")
-        typer.echo(f"  post : {decision.status} ({decision.approver_role}, {decision.policy_id or '—'})")
-
-    narrative = state.get("audit_narrative")
-    if narrative:
-        typer.echo("audit narrative:")
-        typer.echo(f"  {narrative}")
-
-    guard = state.get("payment_guard_report")
-    if guard is not None:
-        typer.echo(f"payment guards : approved={guard.approved}  rail_status={guard.payment_method_status}")
-        if guard.review_trace:
-            typer.echo("  payment_review tools:")
-            for t in guard.review_trace[:5]:
-                typer.echo(f"    → {t}")
-        for b in guard.blockers:
-            typer.echo(f"  blocker: {b}")
-        for w in guard.warnings:
-            typer.echo(f"  warn   : {w}")
-        typer.echo(f"  review : {guard.review_action} — {guard.review_rationale}")
-        if guard.near_dup_matches:
-            typer.echo(f"  near-dup matches: {', '.join(guard.near_dup_matches)}")
-
+        typer.echo(f"   receipt: {payment.receipt_path}")
     review_id = state.get("human_review_id")
     if review_id is not None:
-        typer.echo(f"human review queued as id={review_id}; resolve with `human resolve --id {review_id}`")
+        typer.echo(
+            f"   human review queued as id={review_id}; resolve with "
+            f"`human resolve --id {review_id} --action approve|reject`"
+        )
+    typer.echo(
+        f"   stats: {stats['total_ms']:.1f} ms total  ·  "
+        f"{stats['total_llm_calls']} LLM calls  ·  "
+        f"{stats['total_tool_calls']} tool calls  ·  "
+        f"{stats['stages_completed']}/{len(walkthrough)} stages run "
+        f"({stats['stages_skipped']} skipped, {stats['stages_failed']} failed)"
+    )
 
     llm_errs = state.get("llm_agent_errors") or []
     if llm_errs:
-        typer.echo("llm-agent fallbacks:")
+        typer.echo("")
+        typer.echo("⚠ LLM-agent fallbacks:")
         for e in llm_errs:
-            typer.echo(f"  - {e}")
+            typer.echo(f"   - {e}")
 
     if payment.status == "scheduled":
         return
