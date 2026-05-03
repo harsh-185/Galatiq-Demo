@@ -46,6 +46,7 @@ This module is the *only* place that writes to the reference DB or filesystem.
 from __future__ import annotations
 
 import operator
+import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
@@ -154,9 +155,20 @@ _SERIOUS_INGESTION_WARNINGS = frozenset({
 })
 
 
+def _show_agents_mode() -> bool:
+    """Demo / showcase mode: when GALATIQ_SHOW_AGENTS=1 (or the CLI's
+    --show-agents flag), bypass all deterministic skip-gates so every LLM
+    agent runs on every invoice. Useful for seeing the full multi-agent
+    flow + tool traces on otherwise-clean cases."""
+    return os.environ.get("GALATIQ_SHOW_AGENTS", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _can_skip_pre_approval(state: PipelineState) -> bool:
     """Deterministic gate: skip the LLM screener when the invoice is structurally
     clean enough that an LLM has nothing to find.
+
+    Disabled when GALATIQ_SHOW_AGENTS is set (demo mode forces every agent
+    to run regardless).
 
     All of these must hold:
       • no serious ingestion warning (math, dates, empty vendor)
@@ -164,6 +176,8 @@ def _can_skip_pre_approval(state: PipelineState) -> bool:
       • every line item is in the catalog with status=active
       • quantities are non-negative and within stock
     """
+    if _show_agents_mode():
+        return False
     ingestion = state.get("ingestion")
     if not ingestion:
         return False
@@ -294,12 +308,17 @@ def _approve_node(state: PipelineState) -> PipelineState:
 def _can_skip_council(state: PipelineState) -> bool:
     """Deterministic gate: skip the council only when EVERYTHING is clean.
 
+    Disabled when GALATIQ_SHOW_AGENTS is set (demo mode forces every agent
+    to run regardless).
+
     All of:
       • verdict == pass
       • engine matched TIER-AUTO
       • zero findings (rule + fraud)
       • vendor in table with status=active
     """
+    if _show_agents_mode():
+        return False
     decision = state.get("decision")
     report = state.get("report")
     summary = state.get("pre_approval_summary")

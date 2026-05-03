@@ -16,6 +16,7 @@ itself produce a blocker if it sees a near-duplicate or other concrete issue.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from dataclasses import dataclass
 from decimal import Decimal
@@ -166,9 +167,12 @@ def run_payment_guards(
     #    whether there's actually something to investigate:
     #      - "full":      tool-using investigation (when ledger history exists)
     #      - "narrative": single-shot, no tools, ~1-sentence rationale (otherwise)
+    # Demo / showcase mode (GALATIQ_SHOW_AGENTS) forces full mode so users
+    # can see the tool-using payment investigation regardless of history.
+    show_agents = os.environ.get("GALATIQ_SHOW_AGENTS", "").strip().lower() in {"1", "true", "yes", "on"}
+    review_mode = "full" if (has_history or show_agents) else "narrative"
     review, err, review_trace = _payment_review(
-        invoice, decision, proposed_rail, methods, db_path,
-        mode="full" if has_history else "narrative",
+        invoice, decision, proposed_rail, methods, db_path, mode=review_mode,
     )
     review_action = review.action
     review_rationale = review.rationale
