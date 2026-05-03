@@ -435,30 +435,50 @@ _PAYMENT_BADGE = {
 
 
 def _render_approval(path: Path) -> None:
+    """Render the approval-stage view of the *real* pipeline run.
+
+    Calls ``run_pipeline`` (same code path as the CLI) and surfaces the
+    rule-engine's pre-council decision, the council's reviewer opinions,
+    and the aggregator's final decision. No bypass paths.
+    """
     st.subheader("Approval decision")
     ok, missing = _db_ready()
     if not ok:
         _render_db_not_ready(missing)
         return
+    receipt_dir = REPO_ROOT / "data" / "receipts"
     try:
-        ing = ingest(path, allow_llm=True)
+        state = run_pipeline(path, db_path=DB_PATH, receipt_dir=receipt_dir)
     except Exception as e:  # noqa: BLE001
-        st.error(f"Ingestion failed before approval could run: {type(e).__name__}: {e}")
+        st.error(f"Pipeline failed: {type(e).__name__}: {e}")
         return
-    invoice = ing.invoice
-    with connect(DB_PATH) as conn:
-        report = validate(invoice, conn=conn)
-        decision = approve(invoice, report, conn=conn)
+    if state.get("errors"):
+        for err in state["errors"]:
+            st.error(err)
+        return
+
+    decision = state["decision"]
+    pre_council = state.get("pre_council_decision") or decision
+    report = state["report"]
 
     label, kind = _APPROVAL_BADGE[decision.status]
     {"success": st.success, "warning": st.warning, "error": st.error}[kind](
-        f"**Decision:** {label} — {decision.justification}"
+        f"**Final decision:** {label} — {state.get('audit_narrative') or decision.justification}"
     )
     cols = st.columns(4)
     cols[0].metric("Total (USD)", str(decision.total_usd))
     cols[1].metric("Approver role", decision.approver_role)
     cols[2].metric("Policy", decision.policy_id or "—")
     cols[3].metric("Verdict", report.verdict)
+
+    if (pre_council.status, pre_council.policy_id) != (decision.status, decision.policy_id):
+        st.warning(
+            "**Aggregator override**: "
+            f"engine said `{pre_council.status}` ({pre_council.approver_role}, "
+            f"{pre_council.policy_id or '—'}) → council/aggregator chose "
+            f"`{decision.status}` ({decision.approver_role}, "
+            f"{decision.policy_id or '—'})"
+        )
 
     with connect(DB_PATH) as conn:
         policies = list_policies(conn)
@@ -485,10 +505,11 @@ def _render_approval(path: Path) -> None:
         for code in decision.escalations:
             st.warning(f"`{code}`")
 
-    if decision.status == "pending_human":
+    if decision.status == "pending_human" and state.get("human_review_id"):
         st.caption(
-            f"In a production system this is where {decision.approver_role!r} would receive a "
-            "review task. Wiring that approval workflow is future work."
+            f"Queued for human review as id={state['human_review_id']}. "
+            f"Resolve with: `python main.py human resolve --id {state['human_review_id']} "
+            f"--action approve|reject`"
         )
 
 
