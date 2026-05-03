@@ -317,10 +317,10 @@ def test_aggregator_runs_llm_for_narrative_even_when_no_opinions(monkeypatch):
 # --- end-to-end with full council in fallback mode ---------------------------
 
 
-def test_pipeline_skips_council_for_clean_small_invoice(tmp_path, monkeypatch):
-    """Post-consolidation: clean small invoice (TIER-AUTO + zero findings + known
-    active vendor) skips the council entirely via the deterministic gate."""
-    monkeypatch.setenv("GALATIQ_LLM_AGENTS", "0")
+def test_pipeline_runs_council_on_clean_small_invoice(tmp_path, monkeypatch):
+    """LLM is always part of the approval loop. Even a clean small invoice
+    runs the council (lite profile, 1 reviewer)."""
+    monkeypatch.setenv("GALATIQ_LLM_AGENTS", "0")  # use deterministic fallbacks
     db = tmp_path / "council.db"
     init_db(db)
     inv_path = tmp_path / "small.json"
@@ -336,10 +336,12 @@ def test_pipeline_skips_council_for_clean_small_invoice(tmp_path, monkeypatch):
         "total": "10.00",
     }))
     state = run_pipeline(inv_path, db_path=db, receipt_dir=tmp_path / "r")
-    assert state.get("council_skipped") is True
-    assert state.get("reviewer_opinions") == []
+    # Council ran — lite profile (1 reviewer: fraud).
+    assert state.get("council_skipped") is False
+    assert state["council_profile"].name == "lite"
+    assert [o.reviewer for o in state["reviewer_opinions"]] == ["fraud"]
     assert state["decision"].status == "auto_approved"
-    # Audit log STILL got the FINAL decision via the aggregator's deterministic path.
+    # Audit log got the FINAL decision via the aggregator.
     with connect(db) as conn:
         rows = list_approvals(conn)
     assert len(rows) == 1

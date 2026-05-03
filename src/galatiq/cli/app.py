@@ -51,20 +51,14 @@ def pay_cmd(
         "--llm-agents/--no-llm-agents",
         help="Force-enable or disable the LLM specialist agents (default: env-based)",
     ),
-    show_agents: bool = typer.Option(
-        False,
-        "--show-agents/--no-show-agents",
-        help="Demo mode: bypass the deterministic skip-gates so every LLM agent runs (pre-approval screener with tools, full council, payment_review in full tool mode). Slower but shows the complete multi-agent flow on every invoice.",
-    ),
 ) -> None:
-    """Run the full pipeline (ingest → fraud-screen → validate → … → pay) via LangGraph."""
+    """Run the full pipeline (ingest → pre-approval screener → validate →
+    approve → council → aggregator → … → pay) via LangGraph. The LLM is
+    always part of the approval loop; on hard rule-engine rejects the
+    council steps aside (rules own hard rejects)."""
     load_dotenv()
     if llm_agents is not None:
         os.environ["GALATIQ_LLM_AGENTS"] = "1" if llm_agents else "0"
-    if show_agents:
-        os.environ["GALATIQ_SHOW_AGENTS"] = "1"
-        # Force LLM on too — show-agents without LLM is incoherent.
-        os.environ["GALATIQ_LLM_AGENTS"] = "1"
     if not db_path.exists():
         typer.echo(f"FAILED: reference DB not found at {db_path}; run `db-init` first", err=True)
         raise typer.Exit(code=2)
