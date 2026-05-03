@@ -69,6 +69,8 @@ def review(
     decision: ApprovalDecision,
     *,
     conn: sqlite3.Connection,
+    pre_approval_summary=None,
+    max_tool_loops: int = 4,
 ) -> tuple[ReviewerOpinion, str | None, list[str]]:
     db_path = Path(conn.execute("PRAGMA database_list").fetchone()["file"])
     payload = {
@@ -84,6 +86,7 @@ def review(
             {"code": f.code, "severity": f.severity, "message": f.message}
             for f in report.findings
         ],
+        "pre_approval_summary": pre_approval_summary.model_dump() if pre_approval_summary else None,
     }
     user = (
         "Review this invoice from a FRAUD perspective. Use tools to verify.\n\n"
@@ -95,6 +98,7 @@ def review(
         user=user,
         tools=_tools(db_path),
         fallback=_fallback,
+        max_tool_loops=max_tool_loops,
     )
     if opinion.reviewer != "fraud":
         opinion = opinion.model_copy(update={"reviewer": "fraud"})

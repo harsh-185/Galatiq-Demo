@@ -531,52 +531,51 @@ def _render_payment(path: Path) -> None:
         for n in record.notes:
             st.info(n)
 
-    fraud_findings = state.get("fraud_findings") or []
-    profile = state.get("vendor_profile")
-    risk = state.get("risk_assessment")
+    summary = state.get("pre_approval_summary")
+    pre_trace = state.get("pre_approval_tool_trace") or []
     council_profile = state.get("council_profile")
+    council_skipped = state.get("council_skipped", False)
     opinions = state.get("reviewer_opinions") or []
     reviewer_traces = state.get("reviewer_traces") or {}
     pre_council = state.get("pre_council_decision")
     narrative = state.get("audit_narrative")
     llm_errs = state.get("llm_agent_errors") or []
 
-    if fraud_findings or profile or risk or council_profile or opinions or narrative or llm_errs:
+    show_specialists = bool(summary) or council_profile or opinions or council_skipped or narrative or llm_errs
+    if show_specialists:
         st.markdown("---")
         st.markdown("**LLM specialists**")
-        if fraud_findings or state.get("fraud_tool_trace"):
-            trace = state.get("fraud_tool_trace") or []
-            label = f"🕵️ Fraud screener — {len(fraud_findings)} finding(s)"
-            with st.expander(label, expanded=bool(fraud_findings)):
-                if trace:
-                    st.caption("Tools called: " + " → ".join(f"`{t}`" for t in trace))
-                for f in fraud_findings:
+        if summary is not None and (
+            summary.fraud_findings or summary.items_to_verify or summary.risk_severity != "none" or summary.vendor_profile
+        ):
+            label = f"🛂 Pre-approval screener — risk `{summary.risk_severity}`"
+            with st.expander(label, expanded=summary.risk_severity in ("medium", "high")):
+                if pre_trace:
+                    st.caption("Tools called: " + " → ".join(f"`{t}`" for t in pre_trace[:8]))
+                if summary.risk_hypothesis:
+                    st.markdown(f"**Hypothesis:** {summary.risk_hypothesis}")
+                for f in summary.fraud_findings:
                     if f.severity == "warn":
                         st.warning(f"`{f.code}` — {f.message}")
                     else:
                         st.info(f"`{f.code}` — {f.message}")
-        if profile is not None:
-            with st.expander("🏢 Vendor onboarding", expanded=True):
-                st.markdown(f"**Recommendation:** `{profile.recommendation}`")
-                st.write(profile.rationale)
-                if profile.suggested_aliases:
-                    st.write(f"Suggested aliases: {', '.join(profile.suggested_aliases)}")
-                if profile.default_currency_guess:
-                    st.write(f"Currency guess: `{profile.default_currency_guess}`")
-                if profile.normalized_address:
-                    st.write(f"Normalized address: {profile.normalized_address}")
-        if risk is not None:
-            with st.expander("🔍 Investigator — risk assessment", expanded=True):
-                inv_trace = state.get("investigator_tool_trace") or []
-                if inv_trace:
-                    st.caption("Tools called: " + " → ".join(f"`{t}`" for t in inv_trace))
-                st.markdown(f"**Severity:** {risk.severity_summary}")
-                st.markdown(f"**Hypothesis:** {risk.root_cause_hypothesis}")
-                st.markdown(f"**Recommended action:** `{risk.recommended_action}`")
-                if risk.items_to_verify:
+                if summary.items_to_verify:
                     st.markdown("**Items to verify:**")
-                    for item in risk.items_to_verify:
+                    for item in summary.items_to_verify:
                         st.write(f"- {item}")
+                if summary.vendor_profile is not None:
+                    vp = summary.vendor_profile
+                    st.markdown("**Vendor onboarding profile**")
+                    st.markdown(f"Recommendation: `{vp.recommendation}` — {vp.rationale}")
+                    if vp.suggested_aliases:
+                        st.caption(f"Suggested aliases: {', '.join(vp.suggested_aliases)}")
+                    if vp.default_currency_guess:
+                        st.caption(f"Currency guess: `{vp.default_currency_guess}`")
+                    if vp.normalized_address:
+                        st.caption(f"Normalized address: {vp.normalized_address}")
+        if council_skipped and not opinions:
+            with st.expander("🏛️ Approval council — skipped"):
+                st.caption("Deterministic gate fired: clean small invoice + known active vendor.")
         if council_profile is not None or opinions:
             label = (
                 f"🏛️ Approval council — profile `{council_profile.name}`"

@@ -243,36 +243,28 @@ def pay_cmd(
         for n in payment.notes:
             typer.echo(f"  note: {n}")
 
-    fraud_findings = state.get("fraud_findings") or []
-    fraud_trace = state.get("fraud_tool_trace") or []
-    if fraud_findings or fraud_trace:
-        typer.echo("fraud screen:")
-        for call in fraud_trace:
+    summary = state.get("pre_approval_summary")
+    pre_trace = state.get("pre_approval_tool_trace") or []
+    if summary is not None and (
+        summary.fraud_findings or summary.items_to_verify or summary.risk_severity != "none" or summary.vendor_profile
+    ):
+        typer.echo(f"pre-approval : risk={summary.risk_severity}  {summary.risk_hypothesis}")
+        for call in pre_trace[:5]:
             typer.echo(f"  tool → {call}")
-        for f in fraud_findings:
+        for f in summary.fraud_findings:
             typer.echo(f"  - [{f.severity}] {f.code} — {f.message}")
+        for item in summary.items_to_verify:
+            typer.echo(f"  verify → {item}")
+        if summary.vendor_profile:
+            vp = summary.vendor_profile
+            typer.echo(f"  vendor profile: {vp.recommendation} — {vp.rationale}")
+            if vp.suggested_aliases:
+                typer.echo(f"    aliases: {', '.join(vp.suggested_aliases)}")
+            if vp.default_currency_guess:
+                typer.echo(f"    currency guess: {vp.default_currency_guess}")
 
-    profile = state.get("vendor_profile")
-    if profile is not None:
-        typer.echo("vendor onboarding:")
-        typer.echo(f"  recommendation : {profile.recommendation}")
-        typer.echo(f"  rationale      : {profile.rationale}")
-        if profile.suggested_aliases:
-            typer.echo(f"  aliases        : {', '.join(profile.suggested_aliases)}")
-        if profile.default_currency_guess:
-            typer.echo(f"  currency guess : {profile.default_currency_guess}")
-
-    risk = state.get("risk_assessment")
-    inv_trace = state.get("investigator_tool_trace") or []
-    if risk is not None:
-        typer.echo("risk assessment:")
-        for call in inv_trace:
-            typer.echo(f"  tool → {call}")
-        typer.echo(f"  severity   : {risk.severity_summary}")
-        typer.echo(f"  hypothesis : {risk.root_cause_hypothesis}")
-        typer.echo(f"  recommend  : {risk.recommended_action}")
-        for item in risk.items_to_verify:
-            typer.echo(f"  verify  → {item}")
+    if state.get("council_skipped"):
+        typer.echo("council      : skipped (clean small invoice — deterministic gate)")
 
     profile_obj = state.get("council_profile")
     opinions = state.get("reviewer_opinions") or []
@@ -303,15 +295,17 @@ def pay_cmd(
     guard = state.get("payment_guard_report")
     if guard is not None:
         typer.echo(f"payment guards : approved={guard.approved}  rail_status={guard.payment_method_status}")
-        if guard.near_dup_trace:
-            typer.echo("  near-dup tools:")
-            for t in guard.near_dup_trace[:5]:
+        if guard.review_trace:
+            typer.echo("  payment_review tools:")
+            for t in guard.review_trace[:5]:
                 typer.echo(f"    → {t}")
         for b in guard.blockers:
             typer.echo(f"  blocker: {b}")
         for w in guard.warnings:
             typer.echo(f"  warn   : {w}")
-        typer.echo(f"  critic : {guard.critic_action} — {guard.critic_rationale}")
+        typer.echo(f"  review : {guard.review_action} — {guard.review_rationale}")
+        if guard.near_dup_matches:
+            typer.echo(f"  near-dup matches: {', '.join(guard.near_dup_matches)}")
 
     review_id = state.get("human_review_id")
     if review_id is not None:

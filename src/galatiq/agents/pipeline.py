@@ -1,31 +1,45 @@
-"""End-to-end LangGraph pipeline.
+"""End-to-end LangGraph pipeline (post-consolidation).
 
-Topology:
+Topology (linear):
 
-    START → ingest → fraud_screener → validate → [supervisor]
-                                                    ↙   ↓   ↘
-                                          vendor_onb invest direct
-                                                    ↘   ↓   ↙
-                                                     approve
-                                                       │
-                                                       ▼
-                                                    council
-                                            (tier-scaled compute:
-                                             1 reviewer for $0-1k,
-                                             3 reviewers for $1k+)
-                                                       │
-                                                       ▼
-                                                  aggregator
-                                       (LLM synthesizes opinions →
-                                        final decision + audit narrative)
-                                                       │
-                                                       ▼
-                                                      pay → END
-
-The deterministic agents (ingest, validate, approve, pay) own the load-bearing
-decisions. The LLM specialists (fraud_screener, vendor_onboarding, investigator,
-council reviewers, aggregator) add reasoning + judgment with deterministic
-fallbacks so the pipeline never breaks.
+    START
+      │
+      ▼
+    ingest                        ⚙ pure (LLM fallback only on parse failure)
+      │
+      ▼
+    pre_approval_screener         🛠 ONE tool-using LLM (replaces fraud_screener
+      │                             + investigator + vendor_onboarding)
+      ▼
+    validate                      ⚙ pure; merges fraud_findings; can flip pass→needs_review
+      │
+      ▼
+    approve                       ⚙ pure (rule engine)
+      │
+      ▼
+    council_or_skip               ◇ deterministic gate; skips council on
+      │                             clean+TIER-AUTO+known-active vendor
+    ├── (skip) ────────────────┐
+    │                          │
+    ▼                          ▼
+    council                    │   🛠×N reviewers (tier-scaled; lite/std/deep/deepest)
+      │                        │
+      ▼                        ▼
+    aggregator                 aggregator    🤖 LLM synth → final decision + narrative
+      │                        │             ⛁ writes approval_log
+      └────────────┬───────────┘
+                   ▼
+    hitl_queue                    ⚙ pure; ⛁ writes human_review_queue if pending_human
+                   │
+                   ▼
+    payment_guards                ⚙ banking validator (det.) + 🛠 payment_review
+                   │              (merged near-dup + critic; pre-filtered when
+                   │               no ledger history exists)
+                   ▼
+    pay                           ⚙ pure; honors guard blockers; ⛁ writes payment_log + receipt
+                   │
+                   ▼
+                  END
 
 This module is the *only* place that writes to the reference DB or filesystem.
 """
@@ -38,11 +52,10 @@ from typing import TypedDict
 from langgraph.graph import END, START, StateGraph
 
 from galatiq.agents.approval import ApprovalDecision, approve
-from galatiq.agents.fraud_screener import screen as fraud_screen
 from galatiq.agents.ingestion import IngestionResult, ingest
-from galatiq.agents.investigator import RiskAssessment, assess as investigate
 from galatiq.agents.payment import PaymentRecord, pay
 from galatiq.agents.payment_guards import PaymentGuardReport, run_payment_guards
+from galatiq.agents.pre_approval_screener import PreApprovalSummary, screen as pre_approval_screen
 from galatiq.agents.reviewers import ReviewerOpinion
 from galatiq.agents.reviewers.aggregator import aggregate
 from galatiq.agents.reviewers.compliance import review as compliance_review
@@ -55,10 +68,9 @@ from galatiq.agents.validation import (
     derive_verdict,
     validate,
 )
-from galatiq.agents.vendor_onboarding import VendorProfile, draft_profile
 from galatiq.db import (
     DEFAULT_DB_PATH,
-    STATUS_NEW,
+    STATUS_ACTIVE,
     connect,
     has_invoice,
     lookup_vendor,
@@ -81,15 +93,14 @@ class PipelineState(TypedDict, total=False):
     db_path: Path
     receipt_dir: Path
     ingestion: IngestionResult | None
+    pre_approval_summary: PreApprovalSummary | None
+    pre_approval_tool_trace: list[str]
     fraud_findings: list[Finding]
-    fraud_tool_trace: list[str]
-    investigator_tool_trace: list[str]
     report: ValidationReport | None
-    risk_assessment: RiskAssessment | None
-    vendor_profile: VendorProfile | None
     pre_council_decision: ApprovalDecision | None
     decision: ApprovalDecision | None
     council_profile: CouncilProfile | None
+    council_skipped: bool
     reviewer_opinions: list[ReviewerOpinion]
     reviewer_traces: dict[str, list[str]]
     audit_narrative: str | None
@@ -112,16 +123,21 @@ def _ingest_node(state: PipelineState) -> PipelineState:
     return {"ingestion": result}
 
 
-def _fraud_screen_node(state: PipelineState) -> PipelineState:
+def _pre_approval_node(state: PipelineState) -> PipelineState:
+    """Single merged screener: fraud findings + items_to_verify + vendor profile."""
     if state.get("ingestion") is None:
         return {}
     invoice = state["ingestion"].invoice
     db_path = state["db_path"]
     with connect(db_path) as conn:
-        findings, err, trace = fraud_screen(invoice, conn=conn)
-    update: PipelineState = {"fraud_findings": findings, "fraud_tool_trace": trace}
+        summary, findings, err, trace = pre_approval_screen(invoice, conn=conn)
+    update: PipelineState = {
+        "pre_approval_summary": summary,
+        "fraud_findings": findings,
+        "pre_approval_tool_trace": trace,
+    }
     if err:
-        update["llm_agent_errors"] = state.get("llm_agent_errors", []) + [f"fraud_screener: {err}"]
+        update["llm_agent_errors"] = state.get("llm_agent_errors", []) + [f"pre_approval_screener: {err}"]
     return update
 
 
@@ -152,38 +168,7 @@ def _validate_node(state: PipelineState) -> PipelineState:
     return {"report": report}
 
 
-def _vendor_onboarding_node(state: PipelineState) -> PipelineState:
-    if state.get("ingestion") is None:
-        return {}
-    invoice = state["ingestion"].invoice
-    db_path = state["db_path"]
-    with connect(db_path) as conn:
-        vendor = lookup_vendor(conn, invoice.vendor)
-    if vendor is None:
-        return {}
-    profile, err = draft_profile(invoice, vendor)
-    update: PipelineState = {"vendor_profile": profile}
-    if err:
-        update["llm_agent_errors"] = state.get("llm_agent_errors", []) + [f"vendor_onboarding: {err}"]
-    return update
-
-
-def _investigator_node(state: PipelineState) -> PipelineState:
-    if state.get("ingestion") is None or state.get("report") is None:
-        return {}
-    invoice = state["ingestion"].invoice
-    report = state["report"]
-    db_path = state["db_path"]
-    with connect(db_path) as conn:
-        assessment, err, trace = investigate(invoice, report, conn=conn)
-    update: PipelineState = {"risk_assessment": assessment, "investigator_tool_trace": trace}
-    if err:
-        update["llm_agent_errors"] = state.get("llm_agent_errors", []) + [f"investigator: {err}"]
-    return update
-
-
 def _approve_node(state: PipelineState) -> PipelineState:
-    """Produce the rule-based decision; council + aggregator finalize after."""
     if state.get("ingestion") is None or state.get("report") is None:
         return {}
     invoice = state["ingestion"].invoice
@@ -194,20 +179,51 @@ def _approve_node(state: PipelineState) -> PipelineState:
     return {"pre_council_decision": decision, "decision": decision}
 
 
+def _can_skip_council(state: PipelineState) -> bool:
+    """Deterministic gate: skip the council only when EVERYTHING is clean.
+
+    All of:
+      • verdict == pass
+      • engine matched TIER-AUTO
+      • zero findings (rule + fraud)
+      • vendor in table with status=active
+    """
+    decision = state.get("decision")
+    report = state.get("report")
+    summary = state.get("pre_approval_summary")
+    ingestion = state.get("ingestion")
+    if not (decision and report and ingestion):
+        return False
+    if decision.status != "auto_approved":
+        return False
+    if decision.policy_id != "TIER-AUTO":
+        return False
+    if report.findings:
+        return False
+    if summary and (summary.fraud_findings or summary.risk_severity not in ("none", "low") or summary.vendor_profile is not None):
+        return False
+    invoice = ingestion.invoice
+    with connect(state["db_path"]) as conn:
+        vendor = lookup_vendor(conn, invoice.vendor)
+    return vendor is not None and vendor.status == STATUS_ACTIVE
+
+
 def _council_node(state: PipelineState) -> PipelineState:
-    """Run the tier-scaled council. Each reviewer is a tool-using LLM agent."""
+    """Run the tier-scaled council, OR skip when deterministic gate allows."""
     if state.get("ingestion") is None or state.get("decision") is None or state.get("report") is None:
         return {}
+    decision = state["decision"]
+    if decision.status == "rejected":
+        # Hard rejects skip the council to save LLM compute.
+        return {"council_profile": None, "reviewer_opinions": [], "reviewer_traces": {}, "council_skipped": True}
+
+    if _can_skip_council(state):
+        return {"council_profile": None, "reviewer_opinions": [], "reviewer_traces": {}, "council_skipped": True}
+
     invoice = state["ingestion"].invoice
     report = state["report"]
-    decision = state["decision"]
-
-    # If the rule engine rejected, skip the council — rules own rejects, no
-    # need to spend LLM compute on a foregone outcome.
-    if decision.status == "rejected":
-        return {"council_profile": None, "reviewer_opinions": [], "reviewer_traces": {}}
-
     profile = select_profile(decision.policy_id)
+    summary = state.get("pre_approval_summary")
     db_path = state["db_path"]
     opinions: list[ReviewerOpinion] = []
     traces: dict[str, list[str]] = {}
@@ -216,7 +232,14 @@ def _council_node(state: PipelineState) -> PipelineState:
     with connect(db_path) as conn:
         for reviewer_name in profile.reviewers:
             review_fn = _REVIEWER_FUNCS[reviewer_name]
-            opinion, err, trace = review_fn(invoice, report, decision, conn=conn)
+            opinion, err, trace = review_fn(
+                invoice,
+                report,
+                decision,
+                conn=conn,
+                pre_approval_summary=summary,
+                max_tool_loops=profile.max_tool_loops_per_reviewer,
+            )
             opinions.append(opinion)
             traces[reviewer_name] = trace
             if err:
@@ -226,6 +249,7 @@ def _council_node(state: PipelineState) -> PipelineState:
         "council_profile": profile,
         "reviewer_opinions": opinions,
         "reviewer_traces": traces,
+        "council_skipped": False,
     }
     if errors:
         update["llm_agent_errors"] = state.get("llm_agent_errors", []) + errors
@@ -233,9 +257,11 @@ def _council_node(state: PipelineState) -> PipelineState:
 
 
 def _aggregator_node(state: PipelineState) -> PipelineState:
-    """LLM aggregator: produces final decision + audit narrative.
+    """Synthesize council opinions → final decision + audit narrative.
 
-    Records the FINAL decision to ``approval_log`` (single row per invoice).
+    Records the FINAL decision to ``approval_log``. When the council was
+    skipped (clean small invoice or hard reject), falls into the deterministic
+    aggregation path which preserves the rule decision.
     """
     if state.get("ingestion") is None or state.get("decision") is None or state.get("report") is None:
         return {}
@@ -265,12 +291,7 @@ def _aggregator_node(state: PipelineState) -> PipelineState:
 
 
 def _hitl_queue_node(state: PipelineState) -> PipelineState:
-    """Write a human-review-queue entry for any pending_human decision.
-
-    Doesn't pause the graph (LangGraph interrupts would require checkpointing
-    plumbing). Instead, queues a row that the ``human resolve`` CLI can consume
-    to override the decision and re-run the pay phase.
-    """
+    """Write a human-review-queue entry for any pending_human decision."""
     if state.get("decision") is None or state.get("ingestion") is None:
         return {}
     decision = state["decision"]
@@ -293,12 +314,9 @@ def _hitl_queue_node(state: PipelineState) -> PipelineState:
 
 
 def _payment_guards_node(state: PipelineState) -> PipelineState:
-    """Run the three payment guards. Records the guard report into state."""
     if state.get("ingestion") is None or state.get("decision") is None:
         return {}
     decision = state["decision"]
-    # Guards only apply when the council approved the invoice; for rejects/
-    # pending_human, the pay node will skip and we don't need to spend compute.
     if decision.status != "auto_approved":
         return {}
     invoice = state["ingestion"].invoice
@@ -324,8 +342,6 @@ def _pay_node(state: PipelineState) -> PipelineState:
         vendor = lookup_vendor(conn, invoice.vendor)
         record = pay(invoice, decision, vendor=vendor)
 
-        # Honor payment guard blockers — flip a scheduled payment to failed
-        # if the guards refused it, or apply a suggested rail switch.
         if record.status == "scheduled" and guard_report is not None:
             if not guard_report.approved:
                 record = replace(
@@ -335,7 +351,6 @@ def _pay_node(state: PipelineState) -> PipelineState:
                     notes=record.notes + [f"guard blocker: {b}" for b in guard_report.blockers],
                 )
             elif guard_report.suggested_rail and guard_report.suggested_rail != record.rail:
-                # Rail switch — keep scheduled but use the registered rail.
                 new_rail = guard_report.suggested_rail
                 record = replace(
                     record,
@@ -369,35 +384,14 @@ def _pay_node(state: PipelineState) -> PipelineState:
     return {"payment": record, "receipt_body": receipt_body}
 
 
-# --- supervisor (conditional edge function) -----------------------------------
-
-
-def _supervisor_route(state: PipelineState) -> str:
-    if state.get("ingestion") is None or state.get("report") is None:
-        return "approve"
-    invoice = state["ingestion"].invoice
-    report = state["report"]
-    if report.verdict == "reject":
-        return "approve"
-    with connect(state["db_path"]) as conn:
-        vendor = lookup_vendor(conn, invoice.vendor)
-    if vendor is not None and vendor.status == STATUS_NEW:
-        return "vendor_onboarding"
-    if report.verdict == "needs_review":
-        return "investigator"
-    return "approve"
-
-
 # --- graph --------------------------------------------------------------------
 
 
 def _build_graph():
     g = StateGraph(PipelineState)
     g.add_node("ingest", _ingest_node)
-    g.add_node("fraud_screener", _fraud_screen_node)
+    g.add_node("pre_approval", _pre_approval_node)
     g.add_node("validate", _validate_node)
-    g.add_node("vendor_onboarding", _vendor_onboarding_node)
-    g.add_node("investigator", _investigator_node)
     g.add_node("approve", _approve_node)
     g.add_node("council", _council_node)
     g.add_node("aggregator", _aggregator_node)
@@ -406,19 +400,9 @@ def _build_graph():
     g.add_node("pay", _pay_node)
 
     g.add_edge(START, "ingest")
-    g.add_edge("ingest", "fraud_screener")
-    g.add_edge("fraud_screener", "validate")
-    g.add_conditional_edges(
-        "validate",
-        _supervisor_route,
-        {
-            "approve": "approve",
-            "vendor_onboarding": "vendor_onboarding",
-            "investigator": "investigator",
-        },
-    )
-    g.add_edge("vendor_onboarding", "approve")
-    g.add_edge("investigator", "approve")
+    g.add_edge("ingest", "pre_approval")
+    g.add_edge("pre_approval", "validate")
+    g.add_edge("validate", "approve")
     g.add_edge("approve", "council")
     g.add_edge("council", "aggregator")
     g.add_edge("aggregator", "hitl_queue")

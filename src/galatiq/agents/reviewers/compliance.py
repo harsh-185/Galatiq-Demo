@@ -55,6 +55,8 @@ def review(
     decision: ApprovalDecision,
     *,
     conn: sqlite3.Connection,
+    pre_approval_summary=None,
+    max_tool_loops: int = 4,
 ) -> tuple[ReviewerOpinion, str | None, list[str]]:
     db_path = Path(conn.execute("PRAGMA database_list").fetchone()["file"])
     payload = {
@@ -70,6 +72,7 @@ def review(
             {"code": f.code, "severity": f.severity, "message": f.message}
             for f in report.findings
         ],
+        "pre_approval_summary": pre_approval_summary.model_dump() if pre_approval_summary else None,
     }
     user = (
         "Review this invoice from a COMPLIANCE perspective. Use tools as needed.\n\n"
@@ -81,6 +84,7 @@ def review(
         user=user,
         tools=build_investigator_tools(db_path),
         fallback=_fallback,
+        max_tool_loops=max_tool_loops,
     )
     # Force the reviewer name to match this module (LLM might emit something else).
     if opinion.reviewer != "compliance":
