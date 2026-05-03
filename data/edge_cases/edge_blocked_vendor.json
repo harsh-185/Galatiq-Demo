@@ -1,0 +1,15 @@
+{
+  "invoice_number": "EDGE-BLK-001",
+  "vendor": "ShadyVendor LLC",
+  "vendor_address": "Unknown",
+  "date": "2026-04-10",
+  "due_date": "2026-05-10",
+  "currency": "USD",
+  "line_items": [
+    {"item": "WidgetA", "quantity": 5, "unit_price": "10.00"}
+  ],
+  "subtotal": "50.00",
+  "tax": "0.00",
+  "total": "50.00",
+  "payment_terms": "Net 30"
+}

@@ -231,10 +231,18 @@ def _check_duplicate(invoice: Invoice, conn: sqlite3.Connection, report: Validat
         )
 
 
-def _derive_verdict(findings: Iterable[Finding]) -> Verdict:
+def derive_verdict(findings: Iterable[Finding]) -> Verdict:
+    """Public alias of the verdict-derivation rule.
+
+    Exposed so the pipeline orchestrator can recompute the verdict after merging
+    in advisory findings from the fraud-screener LLM agent.
+    """
     worst = max((_SEVERITY_RANK[f.severity] for f in findings), default=-1)
     if worst >= _SEVERITY_RANK["error"]:
         return "reject"
     if worst >= _SEVERITY_RANK["warn"]:
         return "needs_review"
     return "pass"
+
+
+_derive_verdict = derive_verdict  # backwards-compat for any private callers

@@ -4,6 +4,7 @@ from decimal import Decimal
 
 from galatiq.db import (
     SEED_INVENTORY,
+    SEED_INVENTORY_EXTRA,
     SEED_VENDORS,
     STATUS_ACTIVE,
     STATUS_BLOCKED,
@@ -32,9 +33,12 @@ def test_init_db_creates_file_and_seeds(tmp_path):
     with connect(db_path) as conn:
         items = dict(list_items(conn))
         vendors = list_vendors(conn)
-    assert len(items) == len(SEED_INVENTORY)
+    # Spec base + extras both land by default.
+    expected_count = len(SEED_INVENTORY) + len(SEED_INVENTORY_EXTRA)
+    assert len(items) == expected_count
     assert items["WidgetA"] == 15
-    assert items["FakeItem"] == 0
+    assert items["FakeItem"] == 0  # spec scenario
+    assert items["PhantomSKU"] == 0  # extra: fraud-flag demo SKU
     assert {v.vendor_id for v in vendors} == {v["vendor_id"] for v in SEED_VENDORS}
 
 
@@ -44,10 +48,13 @@ def test_lookup_item_returns_full_row(tmp_path):
     with connect(db_path) as conn:
         widget = lookup_item(conn, "WidgetA")
         fake = lookup_item(conn, "FakeItem")
+        phantom = lookup_item(conn, "PhantomSKU")
         gizmo = lookup_item(conn, "GizmoPro")
         unknown = lookup_item(conn, "DoesNotExist")
-    assert widget is not None and widget.unit_price == Decimal("10.00") and widget.status == STATUS_ACTIVE
-    assert fake is not None and fake.status == STATUS_FRAUD and fake.unit_price is None
+    # Spec items have no unit_price/category — those are extensions.
+    assert widget is not None and widget.unit_price is None and widget.status == STATUS_ACTIVE
+    assert fake is not None and fake.stock == 0 and fake.status == STATUS_ACTIVE
+    assert phantom is not None and phantom.status == STATUS_FRAUD
     assert gizmo is not None and gizmo.status == STATUS_DISCONTINUED
     assert unknown is None
 
@@ -57,8 +64,32 @@ def test_list_inventory_includes_high_value_item(tmp_path):
     init_db(db_path)
     with connect(db_path) as conn:
         rows = {i.item: i for i in list_inventory(conn)}
+    # LaserCutterPro is in the EXTRA seed; verifies extras land by default.
     assert "LaserCutterPro" in rows
     assert rows["LaserCutterPro"].unit_price == Decimal("25000.00")
+
+
+def test_init_db_can_skip_extras(tmp_path):
+    """Spec-strict mode: only the 4 required items, no extensions."""
+    from galatiq.db import init_db as raw_init  # alias to avoid shadowing
+
+    db_path = tmp_path / "specstrict.db"
+    # The schema is written by init_db; do a manual init to pass include_extras=False.
+    p = raw_init(db_path)  # writes the default seed first
+    # Verify the default included extras
+    with connect(p) as conn:
+        items_default = {i for i, _ in list_items(conn)}
+    assert "LaserCutterPro" in items_default
+
+    # Now rebuild with extras off
+    db_path2 = tmp_path / "minimal.db"
+    if db_path2.exists():
+        db_path2.unlink()
+    with connect(db_path2) as conn:
+        init_schema(conn)
+        seed_defaults(conn, include_extras=False)
+        items_minimal = {i for i, _ in list_items(conn)}
+    assert items_minimal == {"WidgetA", "WidgetB", "GadgetX", "FakeItem"}
 
 
 def test_lookup_vendor_matches_canonical_and_alias(tmp_path):

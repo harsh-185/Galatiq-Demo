@@ -1,0 +1,41 @@
+============================================================
+GALATIQ PAYMENT RECEIPT
+============================================================
+Reference     : PAY-VEND-001-INV-CLEAN-001-ACH
+Status        : SCHEDULED
+Rail          : ACH
+Scheduled for : 2026-05-15
+
+-- Vendor --
+Name        : Acme Corp
+Vendor ID   : VEND-001
+
+-- Invoice --
+Number      : INV-CLEAN-001
+Date        : 2026-04-10
+Due date    : 2026-05-15
+Currency    : USD
+Terms       : —
+
+-- Line items --
+Item                        Qty           Unit          Total
+WidgetA                       2          10.00          20.00
+
+-- Totals --
+Subtotal    : 20.00 USD
+Tax         : 0.00 USD
+Total       : 20.00 USD
+Total (USD) : 20.00
+
+-- Approval --
+Status      : auto_approved
+Approver    : system
+Policy      : TIER-AUTO
+Justification: auto-approved under TIER-AUTO (total_usd=20.00 < 1000)
+
+-- Notes --
+- scheduled via ach rail
+
+============================================================
+END OF RECEIPT
+============================================================

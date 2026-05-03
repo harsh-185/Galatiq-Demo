@@ -67,7 +67,7 @@ def test_rejected_invoice_skips_payment(tmp_path, db_path, receipt_dir):
             "vendor": "Acme Corp",
             "date": "2026-01-01",
             "currency": "USD",
-            "line_items": [{"item": "FakeItem", "quantity": 1, "unit_price": "9.99"}],
+            "line_items": [{"item": "PhantomSKU", "quantity": 1, "unit_price": "9.99"}],
             "subtotal": "9.99",
             "tax": "0.00",
             "total": "9.99",

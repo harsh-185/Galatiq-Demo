@@ -338,8 +338,9 @@ _VERDICT_BADGE = {
 
 def _render_validation(path: Path) -> None:
     st.subheader("Validation report")
-    if not DB_PATH.exists():
-        st.warning("Reference DB not initialized. Use the sidebar button.")
+    ok, missing = _db_ready()
+    if not ok:
+        _render_db_not_ready(missing)
         return
     try:
         ing = ingest(path, allow_llm=True)
@@ -394,6 +395,32 @@ def _render_validation(path: Path) -> None:
             )
 
 
+_REQUIRED_TABLES = ("inventory", "vendors", "invoice_ledger", "approval_policies", "approval_log", "payment_log")
+
+
+def _db_ready() -> tuple[bool, list[str]]:
+    """Return (ok, missing_tables) for the dashboard's schema-drift guard."""
+    if not DB_PATH.exists():
+        return False, list(_REQUIRED_TABLES)
+    with connect(DB_PATH) as conn:
+        rows = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    present = {r["name"] for r in rows}
+    missing = [t for t in _REQUIRED_TABLES if t not in present]
+    return not missing, missing
+
+
+def _render_db_not_ready(missing: list[str]) -> None:
+    if missing == list(_REQUIRED_TABLES):
+        st.warning("Reference DB not initialized. Use **Initialize / refresh DB** in the sidebar.")
+    else:
+        st.warning(
+            "Reference DB is from an older schema and is missing tables: "
+            f"`{', '.join(missing)}`. Click **Initialize / refresh DB** in the sidebar to rebuild it."
+        )
+
+
 _APPROVAL_BADGE = {
     "auto_approved": ("✅ AUTO APPROVED", "success"),
     "pending_human": ("⏳ PENDING HUMAN", "warning"),
@@ -408,29 +435,50 @@ _PAYMENT_BADGE = {
 
 
 def _render_approval(path: Path) -> None:
+    """Render the approval-stage view of the *real* pipeline run.
+
+    Calls ``run_pipeline`` (same code path as the CLI) and surfaces the
+    rule-engine's pre-council decision, the council's reviewer opinions,
+    and the aggregator's final decision. No bypass paths.
+    """
     st.subheader("Approval decision")
-    if not DB_PATH.exists():
-        st.warning("Reference DB not initialized. Use the sidebar button.")
+    ok, missing = _db_ready()
+    if not ok:
+        _render_db_not_ready(missing)
         return
+    receipt_dir = REPO_ROOT / "data" / "receipts"
     try:
-        ing = ingest(path, allow_llm=True)
+        state = run_pipeline(path, db_path=DB_PATH, receipt_dir=receipt_dir)
     except Exception as e:  # noqa: BLE001
-        st.error(f"Ingestion failed before approval could run: {type(e).__name__}: {e}")
+        st.error(f"Pipeline failed: {type(e).__name__}: {e}")
         return
-    invoice = ing.invoice
-    with connect(DB_PATH) as conn:
-        report = validate(invoice, conn=conn)
-        decision = approve(invoice, report, conn=conn)
+    if state.get("errors"):
+        for err in state["errors"]:
+            st.error(err)
+        return
+
+    decision = state["decision"]
+    pre_council = state.get("pre_council_decision") or decision
+    report = state["report"]
 
     label, kind = _APPROVAL_BADGE[decision.status]
     {"success": st.success, "warning": st.warning, "error": st.error}[kind](
-        f"**Decision:** {label} — {decision.justification}"
+        f"**Final decision:** {label} — {state.get('audit_narrative') or decision.justification}"
     )
     cols = st.columns(4)
     cols[0].metric("Total (USD)", str(decision.total_usd))
     cols[1].metric("Approver role", decision.approver_role)
     cols[2].metric("Policy", decision.policy_id or "—")
     cols[3].metric("Verdict", report.verdict)
+
+    if (pre_council.status, pre_council.policy_id) != (decision.status, decision.policy_id):
+        st.warning(
+            "**Aggregator override**: "
+            f"engine said `{pre_council.status}` ({pre_council.approver_role}, "
+            f"{pre_council.policy_id or '—'}) → council/aggregator chose "
+            f"`{decision.status}` ({decision.approver_role}, "
+            f"{decision.policy_id or '—'})"
+        )
 
     with connect(DB_PATH) as conn:
         policies = list_policies(conn)
@@ -457,17 +505,19 @@ def _render_approval(path: Path) -> None:
         for code in decision.escalations:
             st.warning(f"`{code}`")
 
-    if decision.status == "pending_human":
+    if decision.status == "pending_human" and state.get("human_review_id"):
         st.caption(
-            f"In a production system this is where {decision.approver_role!r} would receive a "
-            "review task. Wiring that approval workflow is future work."
+            f"Queued for human review as id={state['human_review_id']}. "
+            f"Resolve with: `python main.py human resolve --id {state['human_review_id']} "
+            f"--action approve|reject`"
         )
 
 
 def _render_payment(path: Path) -> None:
     st.subheader("Payment")
-    if not DB_PATH.exists():
-        st.warning("Reference DB not initialized. Use the sidebar button.")
+    ok, missing = _db_ready()
+    if not ok:
+        _render_db_not_ready(missing)
         return
 
     receipt_dir = REPO_ROOT / "data" / "receipts"
@@ -502,8 +552,99 @@ def _render_payment(path: Path) -> None:
         for n in record.notes:
             st.info(n)
 
+    summary = state.get("pre_approval_summary")
+    pre_trace = state.get("pre_approval_tool_trace") or []
+    council_profile = state.get("council_profile")
+    council_skipped = state.get("council_skipped", False)
+    opinions = state.get("reviewer_opinions") or []
+    reviewer_traces = state.get("reviewer_traces") or {}
+    pre_council = state.get("pre_council_decision")
+    narrative = state.get("audit_narrative")
+    llm_errs = state.get("llm_agent_errors") or []
+
+    show_specialists = bool(summary) or council_profile or opinions or council_skipped or narrative or llm_errs
+    if show_specialists:
+        st.markdown("---")
+        st.markdown("**LLM specialists**")
+        if summary is not None and (
+            summary.fraud_findings or summary.items_to_verify or summary.risk_severity != "none" or summary.vendor_profile
+        ):
+            label = f"🛂 Pre-approval screener — risk `{summary.risk_severity}`"
+            with st.expander(label, expanded=summary.risk_severity in ("medium", "high")):
+                if pre_trace:
+                    st.caption("Tools called: " + " → ".join(f"`{t}`" for t in pre_trace[:8]))
+                if summary.risk_hypothesis:
+                    st.markdown(f"**Hypothesis:** {summary.risk_hypothesis}")
+                for f in summary.fraud_findings:
+                    if f.severity == "warn":
+                        st.warning(f"`{f.code}` — {f.message}")
+                    else:
+                        st.info(f"`{f.code}` — {f.message}")
+                if summary.items_to_verify:
+                    st.markdown("**Items to verify:**")
+                    for item in summary.items_to_verify:
+                        st.write(f"- {item}")
+                if summary.vendor_profile is not None:
+                    vp = summary.vendor_profile
+                    st.markdown("**Vendor onboarding profile**")
+                    st.markdown(f"Recommendation: `{vp.recommendation}` — {vp.rationale}")
+                    if vp.suggested_aliases:
+                        st.caption(f"Suggested aliases: {', '.join(vp.suggested_aliases)}")
+                    if vp.default_currency_guess:
+                        st.caption(f"Currency guess: `{vp.default_currency_guess}`")
+                    if vp.normalized_address:
+                        st.caption(f"Normalized address: {vp.normalized_address}")
+        if council_skipped and not opinions:
+            with st.expander("🏛️ Approval council — skipped"):
+                st.caption("Deterministic gate fired: clean small invoice + known active vendor.")
+        if council_profile is not None or opinions:
+            label = (
+                f"🏛️ Approval council — profile `{council_profile.name}`"
+                if council_profile is not None
+                else "🏛️ Approval council"
+            )
+            with st.expander(label, expanded=True):
+                if council_profile is not None:
+                    st.caption(
+                        f"Reviewers: {', '.join(council_profile.reviewers) or '(none)'} · "
+                        f"max tool loops/reviewer: {council_profile.max_tool_loops_per_reviewer} · "
+                        f"{council_profile.rationale}"
+                    )
+                for op in opinions:
+                    color_map = {"low": "info", "medium": "warning", "high": "error"}
+                    fn = {"info": st.info, "warning": st.warning, "error": st.error}[
+                        color_map.get(op.severity, "info")
+                    ]
+                    fn(f"**{op.reviewer.upper()}** ({op.severity}) — `{op.verdict}` · {op.rationale}")
+                    tr = reviewer_traces.get(op.reviewer) or []
+                    if tr:
+                        st.caption("Tools called: " + " → ".join(f"`{t}`" for t in tr))
+                    if op.concerns:
+                        for c in op.concerns:
+                            st.caption(f"• {c}")
+                if pre_council is not None and (pre_council.status, pre_council.policy_id) != (
+                    decision.status,
+                    decision.policy_id,
+                ):
+                    st.warning(
+                        "**Aggregator override**: "
+                        f"`{pre_council.status}` ({pre_council.approver_role}, "
+                        f"{pre_council.policy_id or '—'}) → "
+                        f"`{decision.status}` ({decision.approver_role}, "
+                        f"{decision.policy_id or '—'})"
+                    )
+
+        if narrative:
+            with st.expander("📝 Audit narrative", expanded=True):
+                st.write(narrative)
+        if llm_errs:
+            with st.expander(f"⚠️ LLM fallbacks ({len(llm_errs)})"):
+                for e in llm_errs:
+                    st.caption(e)
+
     body = state.get("receipt_body")
     if record.status == "scheduled" and body:
+        st.markdown("---")
         st.markdown("**Receipt artifact**")
         st.code(body, language="text")
         st.caption(f"Written to `{record.receipt_path}`")
