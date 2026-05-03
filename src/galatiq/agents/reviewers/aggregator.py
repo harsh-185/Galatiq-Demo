@@ -25,46 +25,21 @@ from galatiq.agents.reviewers.types import ReviewerOpinion, aggregate_opinions
 from galatiq.agents.validation import ValidationReport
 from galatiq.models.invoice import Invoice
 
-_SYSTEM = """\
-You are the APPROVAL COUNCIL AGGREGATOR. You see the rule engine's tier-based
-decision plus opinions from up to three specialist reviewers (compliance,
-fraud, policy). Your job is to:
+_SYSTEM_WITH_COUNCIL = """\
+You synthesize a council's opinions into a final approval decision + 2-3 sentence audit narrative.
+Hard rules:
+- engine 'rejected' MUST stay rejected
+- engine 'pending_human' may become 'auto_approved' ONLY when ALL reviewers said approve+low and no load-bearing finding exists (vendor_blocked, fraud_flag_sku, duplicate_invoice, stock_overflow, zero_stock, negative_quantity, empty_vendor)
+- engine 'pending_human' may become 'rejected' if reviewers found material risk
+- engine 'auto_approved' may stay or downgrade to 'pending_human' on reviewer concerns
+Cite at least one reviewer or finding code in the narrative. Be specific and concise.
+"""
 
-1. Synthesize the reviewers' views into a single final decision.
-2. Write a 2-3 sentence audit narrative explaining the outcome.
 
-Output schema fields:
-- final_status: "auto_approved" | "pending_human" | "rejected"
-- final_approver_role: "system" | "manager" | "director" | "cfo" | "none"
-- final_policy_id: "TIER-AUTO" | "TIER-MGR" | "TIER-DIR" | "TIER-CFO" | null
-- audit_narrative: 2-3 sentence plain prose, citing specific reviewer
-  opinions or finding codes.
-
-Decision rules:
-- If the rule engine produced ``rejected``, you MUST keep it rejected.
-  (Rules own hard rejections.)
-- If the engine produced ``auto_approved``, you may keep it OR downgrade to
-  ``pending_human`` based on reviewer concerns.
-- If the engine produced ``pending_human`` (i.e. verdict was needs_review),
-  you have THREE options:
-    (a) Confirm pending_human and (optionally) escalate the tier when you
-        see material risk the rule engine missed.
-    (b) RESOLVE TO auto_approved when ALL reviewers verdict="approve" with
-        severity="low" AND none of the findings are load-bearing (vendor_blocked,
-        fraud_flag_sku, duplicate_invoice, stock_overflow, zero_stock,
-        negative_quantity, empty_vendor — these always force human review).
-        Use this when the council's investigation showed the warnings were
-        benign (e.g. unknown vendor that turned out to be a known alias,
-        currency drift that's intentional, etc.).
-    (c) RESOLVE TO rejected when reviewers found material concerns the rule
-        engine couldn't see (e.g. fraud reviewer flagged a typosquat with
-        high severity).
-  In short: the council is empowered to make the final call when its
-  investigation gives clear evidence either way. Defer to a human only when
-  you genuinely cannot decide.
-
-Be specific. Cite at least one reviewer (e.g. "the fraud reviewer noted X")
-or a finding code in the narrative.
+_SYSTEM_NO_COUNCIL = """\
+You write a 2-3 sentence audit narrative for an already-finalized rule-engine decision.
+The engine already decided; you do NOT change status/role/policy — just echo them and write the narrative.
+Cite the policy band, total, and any escalations or findings if present.
 """
 
 # Findings the rule engine considers load-bearing — the aggregator cannot
@@ -143,55 +118,45 @@ def aggregate(
     decision: ApprovalDecision,
     opinions: list[ReviewerOpinion],
 ) -> tuple[ApprovalDecision, str, str | None]:
-    """Run the LLM aggregator. Returns ``(final_decision, narrative, error)``.
+    """Always-on aggregator: 1 LLM call to produce the final decision + a real
+    audit narrative.
 
-    When ``opinions`` is empty (council was skipped — clean small invoice or
-    hard reject) there's nothing for the LLM to synthesize. We use the
-    deterministic narrative path instead of burning a Grok call.
+    With opinions: synthesizes the council into a final call.
+    Without opinions (council skipped): writes a narrative for the engine's
+    decision without changing it. Same schema either way.
     """
-    if not opinions:
-        aggregated = _fallback(decision, opinions)
-        final = ApprovalDecision(
-            status=aggregated.final_status,
-            approver_role=aggregated.final_approver_role,
-            policy_id=aggregated.final_policy_id,
-            total_usd=decision.total_usd,
-            justification=aggregated.audit_narrative,
-            escalations=decision.escalations,
-        )
-        return final, aggregated.audit_narrative, None
-
-    payload = {
+    has_council = bool(opinions)
+    payload: dict = {
         "engine_decision": {
             "status": decision.status,
             "approver_role": decision.approver_role,
             "policy_id": decision.policy_id,
             "total_usd": str(decision.total_usd),
-            "engine_justification": decision.justification,
             "escalations": decision.escalations,
         },
         "verdict": report.verdict,
-        "findings": [
-            {"code": f.code, "severity": f.severity, "message": f.message}
-            for f in report.findings
-        ],
-        "reviewer_opinions": [o.model_dump() for o in opinions],
-        "invoice_excerpt": {
-            "invoice_number": invoice.invoice_number,
+        "invoice": {
             "vendor": invoice.vendor,
             "currency": invoice.currency,
             "total": str(invoice.total),
             "line_item_count": len(invoice.line_items),
         },
     }
-    user = (
-        "Synthesize the reviewers' opinions into a final decision and audit "
-        "narrative.\n\n"
-        f"```json\n{json.dumps(payload, indent=2, default=str)}\n```"
-    )
+    if report.findings:
+        payload["findings"] = [
+            {"code": f.code, "severity": f.severity, "message": f.message}
+            for f in report.findings[:5]
+        ]
+    if has_council:
+        payload["reviewer_opinions"] = [o.model_dump() for o in opinions]
+        user = f"Synthesize → final decision + narrative.\n```json\n{json.dumps(payload, default=str)}\n```"
+        system = _SYSTEM_WITH_COUNCIL
+    else:
+        user = f"Write the narrative (do NOT change the decision).\n```json\n{json.dumps(payload, default=str)}\n```"
+        system = _SYSTEM_NO_COUNCIL
     aggregated, err = _llm_helpers.run_llm_agent(
         AggregatedDecision,
-        system=_SYSTEM,
+        system=system,
         user=user,
         fallback=lambda: _fallback(decision, opinions),
     )

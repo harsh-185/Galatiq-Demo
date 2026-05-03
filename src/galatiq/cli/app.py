@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 import typer
 from dotenv import load_dotenv
 
-from galatiq.agents._walkthrough import render_walkthrough, summary_stats
+from galatiq.agents._walkthrough import (
+    StageEvent,
+    set_stream_callback,
+    summary_stats,
+)
 from galatiq.agents.approval import ApprovalDecision
 from galatiq.agents.ingestion import ingest
 from galatiq.agents.payment import pay as pay_agent
@@ -54,7 +59,48 @@ def pay_cmd(
     if not db_path.exists():
         typer.echo(f"FAILED: reference DB not found at {db_path}; run `db-init` first", err=True)
         raise typer.Exit(code=2)
-    state = run_pipeline(invoice_path, db_path=db_path, receipt_dir=receipts)
+    # ── Live streaming printer ──────────────────────────────────────────────
+    typer.echo("")
+    typer.echo(f"📄 Invoice: {invoice_path.name}")
+    typer.echo("━" * 60)
+    typer.echo("Pipeline walkthrough (streaming)")
+    typer.echo("━" * 60)
+
+    stage_idx = {"n": 0}
+
+    def _stream(event: StageEvent, phase: str) -> None:
+        if phase == "started":
+            stage_idx["n"] += 1
+            sys.stdout.write(f"  ▶ [{stage_idx['n']}] {event.name} …\n")
+            sys.stdout.flush()
+            return
+        # phase == "completed"
+        marker = {"completed": "✓", "skipped": "⊘", "failed": "✗"}[event.status]
+        head = (
+            f"    [{marker}] {event.name:<22} {event.duration_ms:>7.1f} ms"
+        )
+        if event.llm_calls:
+            head += f"  ·  {event.llm_calls} LLM call{'s' if event.llm_calls != 1 else ''}"
+        if event.tools_used:
+            head += f"  ·  {len(event.tools_used)} tool{'s' if len(event.tools_used) != 1 else ''}"
+        sys.stdout.write(head + "\n")
+        if event.summary:
+            sys.stdout.write(f"        {event.summary}\n")
+        for d in event.details[:5]:
+            sys.stdout.write(f"        {d}\n")
+        if event.tools_used:
+            for t in event.tools_used[:3]:
+                sys.stdout.write(f"        tool → {t}\n")
+            if len(event.tools_used) > 3:
+                sys.stdout.write(f"        tool → … and {len(event.tools_used) - 3} more\n")
+        sys.stdout.flush()
+
+    set_stream_callback(_stream)
+    try:
+        state = run_pipeline(invoice_path, db_path=db_path, receipt_dir=receipts)
+    finally:
+        set_stream_callback(None)
+
     if state.get("errors"):
         for err in state["errors"]:
             typer.echo(f"ERROR: {err}", err=True)
@@ -62,12 +108,7 @@ def pay_cmd(
 
     decision = state["decision"]
     payment = state["payment"]
-
-    # ── Stage-by-stage walkthrough ──────────────────────────────────────────
     walkthrough = state.get("walkthrough") or []
-    typer.echo("")
-    typer.echo(f"📄 Invoice: {invoice_path.name}")
-    typer.echo(render_walkthrough(walkthrough))
 
     # ── Final summary ───────────────────────────────────────────────────────
     stats = summary_stats(walkthrough)

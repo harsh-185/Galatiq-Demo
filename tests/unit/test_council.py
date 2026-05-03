@@ -294,13 +294,24 @@ def test_aggregator_falls_back_when_llm_unavailable(monkeypatch):
     assert narrative
 
 
-def test_aggregator_skips_llm_call_when_no_opinions():
-    """No opinions = council was skipped (clean small invoice). The aggregator
-    uses the deterministic path with zero LLM cost."""
+def test_aggregator_runs_llm_for_narrative_even_when_no_opinions(monkeypatch):
+    """No opinions = council was skipped, but the aggregator still produces an
+    LLM-written audit narrative (with a concise no-council prompt). The audit
+    trail always has an LLM-written justification.
+    """
+    _stub_aggregator(
+        monkeypatch,
+        AggregatedDecision(
+            final_status="auto_approved",
+            final_approver_role="system",
+            final_policy_id="TIER-AUTO",
+            audit_narrative="Engine approved under TIER-AUTO; clean invoice, no findings.",
+        ),
+    )
     final, narrative, err = aggregate(_invoice(), ValidationReport(verdict="pass"), _decision(), [])
-    assert err is None  # deterministic path doesn't error
+    assert err is None
     assert final.status == "auto_approved"
-    assert narrative  # narrative is the engine's justification
+    assert "TIER-AUTO" in narrative
 
 
 # --- end-to-end with full council in fallback mode ---------------------------

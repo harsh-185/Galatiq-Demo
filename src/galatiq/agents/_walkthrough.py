@@ -14,8 +14,9 @@ from __future__ import annotations
 
 import time
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Iterator, Literal
+from typing import Callable, Iterator, Literal
 
 from galatiq.agents._llm_helpers import (
     get_llm_call_count,
@@ -24,6 +25,20 @@ from galatiq.agents._llm_helpers import (
 
 
 StageStatus = Literal["completed", "skipped", "failed"]
+StagePhase = Literal["started", "completed"]
+
+
+# Optional callback for live streaming. When set, ``stage_event`` invokes it
+# both at the start (phase="started", event.duration_ms == 0) and at the end
+# (phase="completed", with full data) of each stage. The CLI installs this so
+# users see progress instead of a long silent wait during LLM calls.
+_stream_callback: ContextVar[Callable[["StageEvent", StagePhase], None] | None] = (
+    ContextVar("_stream_callback", default=None)
+)
+
+
+def set_stream_callback(cb: Callable[["StageEvent", StagePhase], None] | None) -> None:
+    _stream_callback.set(cb)
 
 
 @dataclass
@@ -41,15 +56,21 @@ class StageEvent:
 def stage_event(name: str) -> Iterator[StageEvent]:
     """Time a pipeline-node block and yield a StageEvent.
 
-    The node fills in ``status`` / ``summary`` / ``details`` / ``tools_used``
-    on the yielded object. ``duration_ms`` and ``llm_calls`` are populated
-    automatically. The CALLER is responsible for including the event in its
-    return dict (typically as ``{"walkthrough": [ev], ...}``) so LangGraph's
-    ``operator.add`` reducer can append it across nodes.
+    Calls the streaming callback (if set) twice — once at start so the user
+    sees that the stage is running (key during slow LLM calls), and once at
+    completion with full data.
     """
     event = StageEvent(name=name)
     reset_llm_call_counter()
     started = time.perf_counter()
+
+    cb = _stream_callback.get()
+    if cb is not None:
+        try:
+            cb(event, "started")
+        except Exception:  # noqa: BLE001 — never break the pipeline on a bad callback
+            pass
+
     try:
         yield event
     except Exception as e:  # noqa: BLE001
@@ -59,6 +80,11 @@ def stage_event(name: str) -> Iterator[StageEvent]:
     finally:
         event.duration_ms = (time.perf_counter() - started) * 1000
         event.llm_calls = get_llm_call_count()
+        if cb is not None:
+            try:
+                cb(event, "completed")
+            except Exception:  # noqa: BLE001
+                pass
 
 
 def render_walkthrough(events: list[StageEvent]) -> str:
