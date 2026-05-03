@@ -328,10 +328,10 @@ def test_pipeline_parallel_council_preserves_canonical_reviewer_order(tmp_path, 
         "date": "2026-01-01",
         "due_date": "2099-01-01",
         "currency": "USD",
-        "line_items": [{"item": "BoltPack", "quantity": 400, "unit_price": "5.00"}],
-        "subtotal": "2000.00",
+        "line_items": [{"item": "LaserCutterPro", "quantity": 1, "unit_price": "25000.00"}],
+        "subtotal": "25000.00",
         "tax": "0.00",
-        "total": "2000.00",
+        "total": "25000.00",
     }))
     state = run_pipeline(inv_path, db_path=db, receipt_dir=tmp_path / "r")
     # Standard profile → 3 reviewers in canonical order.
@@ -341,7 +341,7 @@ def test_pipeline_parallel_council_preserves_canonical_reviewer_order(tmp_path, 
 
 
 def test_pipeline_runs_full_council_for_manager_tier(tmp_path, monkeypatch):
-    """$2k invoice → TIER-MGR → 'standard' profile → all 3 reviewers run."""
+    """$25k invoice → TIER-MGR → 'standard' profile → all 3 reviewers run."""
     monkeypatch.setenv("GALATIQ_LLM_AGENTS", "0")
     db = tmp_path / "council2.db"
     init_db(db)
@@ -352,10 +352,10 @@ def test_pipeline_runs_full_council_for_manager_tier(tmp_path, monkeypatch):
         "date": "2026-01-01",
         "due_date": "2099-01-01",
         "currency": "USD",
-        "line_items": [{"item": "BoltPack", "quantity": 400, "unit_price": "5.00"}],
-        "subtotal": "2000.00",
+        "line_items": [{"item": "LaserCutterPro", "quantity": 1, "unit_price": "25000.00"}],
+        "subtotal": "25000.00",
         "tax": "0.00",
-        "total": "2000.00",
+        "total": "25000.00",
     }))
     state = run_pipeline(inv_path, db_path=db, receipt_dir=tmp_path / "r")
     assert state["council_profile"].name == "standard"

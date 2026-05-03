@@ -138,7 +138,7 @@ SEED_INVENTORY: list[dict[str, Any]] = [
 SEED_INVENTORY_EXTRA: list[dict[str, Any]] = [
     {"item": "GizmoPro",       "stock": 100, "unit_price": "200.00",  "category": "electronics", "status": STATUS_DISCONTINUED},
     {"item": "BoltPack",       "stock": 500, "unit_price": "5.00",    "category": "hardware",    "status": STATUS_ACTIVE},
-    {"item": "LaserCutterPro", "stock": 3,   "unit_price": "25000.00","category": "equipment",   "status": STATUS_ACTIVE},
+    {"item": "LaserCutterPro", "stock": 20,  "unit_price": "25000.00","category": "equipment",   "status": STATUS_ACTIVE},
     {"item": "PhantomSKU",     "stock": 0,   "unit_price": None,      "category": None,          "status": STATUS_FRAUD},
 ]
 
@@ -153,18 +153,44 @@ SEED_VENDOR_PAYMENT_METHODS: list[dict[str, Any]] = [
     {"vendor_id": "VEND-003", "rail": "ach",   "account_ref": None,            "status": "disabled"},
     # NewCo — pending banking verification.
     {"vendor_id": "VEND-004", "rail": "ach",   "account_ref": None,            "status": "pending_verification"},
+    # --- corpus vendors: ACH default + wire for invoices > $5k ---------------
+    {"vendor_id": "VEND-005", "rail": "ach",   "account_ref": "WIDGETS-ACH-001",   "status": "active"},
+    {"vendor_id": "VEND-005", "rail": "wire",  "account_ref": "WIDGETS-WIRE-001",  "status": "active"},
+    {"vendor_id": "VEND-006", "rail": "ach",   "account_ref": "PPL-ACH-001",       "status": "active"},
+    {"vendor_id": "VEND-006", "rail": "wire",  "account_ref": "PPL-WIRE-001",      "status": "active"},
+    {"vendor_id": "VEND-007", "rail": "ach",   "account_ref": "AIS-ACH-001",       "status": "active"},
+    {"vendor_id": "VEND-008", "rail": "ach",   "account_ref": "GADGETS-ACH-001",   "status": "active"},
+    {"vendor_id": "VEND-009", "rail": "wire",  "account_ref": "CMG-WIRE-001",      "status": "active"},
+    {"vendor_id": "VEND-009", "rail": "check", "account_ref": "CMG-CHK-001",       "status": "active"},
+    {"vendor_id": "VEND-010", "rail": "ach",   "account_ref": "SUMMIT-ACH-001",    "status": "active"},
+    {"vendor_id": "VEND-010", "rail": "wire",  "account_ref": "SUMMIT-WIRE-001",   "status": "active"},
+    {"vendor_id": "VEND-011", "rail": "ach",   "account_ref": "ATLAS-ACH-001",     "status": "active"},
+    {"vendor_id": "VEND-011", "rail": "wire",  "account_ref": "ATLAS-WIRE-001",    "status": "active"},
+    {"vendor_id": "VEND-012", "rail": "wire",  "account_ref": "TECHPARTS-WIRE-001","status": "active"},
+    {"vendor_id": "VEND-013", "rail": "ach",   "account_ref": "RCI-ACH-001",       "status": "active"},
+    {"vendor_id": "VEND-013", "rail": "wire",  "account_ref": "RCI-WIRE-001",      "status": "active"},
+    {"vendor_id": "VEND-014", "rail": "wire",  "account_ref": "GSCP-WIRE-001",     "status": "active"},
+    # --- new vendors: pending verification, blocked, etc. -------------------
+    {"vendor_id": "VEND-015", "rail": "ach",   "account_ref": None,                "status": "disabled"},
+    {"vendor_id": "VEND-016", "rail": "ach",   "account_ref": None,                "status": "pending_verification"},
+    {"vendor_id": "VEND-017", "rail": "ach",   "account_ref": None,                "status": "pending_verification"},
+    {"vendor_id": "VEND-018", "rail": "ach",   "account_ref": None,                "status": "pending_verification"},
 ]
 
 
+# Approval tier bands match the spec's "invoices over $10K require additional
+# scrutiny" framing. The system can auto-approve clean invoices up to $10K;
+# higher amounts route to a human at the appropriate seniority.
 SEED_APPROVAL_POLICIES: list[dict[str, Any]] = [
-    {"policy_id": "TIER-AUTO", "min_usd": "0",      "max_usd": "1000",   "approver_role": "system"},
-    {"policy_id": "TIER-MGR",  "min_usd": "1000",   "max_usd": "10000",  "approver_role": "manager"},
-    {"policy_id": "TIER-DIR",  "min_usd": "10000",  "max_usd": "50000",  "approver_role": "director"},
-    {"policy_id": "TIER-CFO",  "min_usd": "50000",  "max_usd": None,     "approver_role": "cfo"},
+    {"policy_id": "TIER-AUTO", "min_usd": "0",       "max_usd": "10000",  "approver_role": "system"},
+    {"policy_id": "TIER-MGR",  "min_usd": "10000",   "max_usd": "50000",  "approver_role": "manager"},
+    {"policy_id": "TIER-DIR",  "min_usd": "50000",   "max_usd": "200000", "approver_role": "director"},
+    {"policy_id": "TIER-CFO",  "min_usd": "200000",  "max_usd": None,     "approver_role": "cfo"},
 ]
 
 
 SEED_VENDORS: list[dict[str, Any]] = [
+    # --- baseline vendors (for tests + edge cases) ----------------------------
     {
         "vendor_id": "VEND-001",
         "name": "Acme Corp",
@@ -195,6 +221,120 @@ SEED_VENDORS: list[dict[str, Any]] = [
         "aliases": [],
         "address": "789 Newcomer Rd",
         "status": STATUS_NEW,
+        "default_currency": "USD",
+    },
+    # --- legitimate vendors observed in data/invoices/ corpus ----------------
+    {
+        "vendor_id": "VEND-005",
+        "name": "Widgets Inc.",
+        "aliases": ["Widgets Inc", "Widgets Incorporated", "Widgets"],
+        "address": "100 Main St, Chicago, IL 60601",
+        "status": STATUS_ACTIVE,
+        "default_currency": "USD",
+    },
+    {
+        "vendor_id": "VEND-006",
+        "name": "Precision Parts Ltd.",
+        "aliases": ["Precision Parts", "PPL", "Precision Parts Limited"],
+        "address": "742 Evergreen Terrace, Springfield, IL 62704",
+        "status": STATUS_ACTIVE,
+        "default_currency": "USD",
+    },
+    {
+        "vendor_id": "VEND-007",
+        "name": "Acme Industrial Supplies",
+        "aliases": ["Acme Industrial", "AIS"],
+        "address": None,
+        "status": STATUS_ACTIVE,
+        "default_currency": "USD",
+    },
+    {
+        "vendor_id": "VEND-008",
+        "name": "Gadgets Co.",
+        "aliases": ["Gadgets", "Gadgets Company"],
+        "address": None,
+        "status": STATUS_ACTIVE,
+        "default_currency": "USD",
+    },
+    {
+        "vendor_id": "VEND-009",
+        "name": "Consolidated Materials Group",
+        "aliases": ["Consolidated Materials", "CMG"],
+        "address": None,
+        "status": STATUS_ACTIVE,
+        "default_currency": "USD",
+    },
+    {
+        "vendor_id": "VEND-010",
+        "name": "Summit Manufacturing Co.",
+        "aliases": ["Summit Manufacturing", "Summit Mfg", "Summit Mfg Co."],
+        "address": None,
+        "status": STATUS_ACTIVE,
+        "default_currency": "USD",
+    },
+    {
+        "vendor_id": "VEND-011",
+        "name": "Atlas Industrial Supply",
+        "aliases": ["Atlas Industrial", "Atlas"],
+        "address": "500 Commerce Blvd, Detroit, MI 48201",
+        "status": STATUS_ACTIVE,
+        "default_currency": "USD",
+    },
+    {
+        "vendor_id": "VEND-012",
+        "name": "TechParts International",
+        "aliases": ["TechParts", "TechParts Intl"],
+        "address": None,
+        "status": STATUS_ACTIVE,
+        "default_currency": "EUR",  # Cross-currency by design — flags currency_drift on USD invoices.
+    },
+    {
+        "vendor_id": "VEND-013",
+        "name": "Reliable Components Inc.",
+        "aliases": ["Reliable Components", "RCI"],
+        "address": None,
+        "status": STATUS_ACTIVE,
+        "default_currency": "USD",
+    },
+    {
+        "vendor_id": "VEND-014",
+        "name": "Global Supply Chain Partners",
+        "aliases": ["Global Supply Chain", "GSCP"],
+        "address": "1600 Pennsylvania Ave, Washington, DC 20500",
+        "status": STATUS_ACTIVE,
+        "default_currency": "USD",
+    },
+    # --- suspicious / new vendors from the corpus ---------------------------
+    {
+        "vendor_id": "VEND-015",
+        "name": "Fraudster LLC",
+        "aliases": [],
+        "address": None,
+        "status": STATUS_BLOCKED,  # Name says it all; matches INV-1003's spirit.
+        "default_currency": "USD",
+    },
+    {
+        "vendor_id": "VEND-016",
+        "name": "MegaWidgets Corp",
+        "aliases": ["MegaWidgets"],
+        "address": None,
+        "status": STATUS_NEW,  # Suspicious-feeling name; first-time vendor demo.
+        "default_currency": "USD",
+    },
+    {
+        "vendor_id": "VEND-017",
+        "name": "NoProd Industries",
+        "aliases": [],
+        "address": None,
+        "status": STATUS_NEW,  # Sells SKUs not in our catalog; flag for review.
+        "default_currency": "USD",
+    },
+    {
+        "vendor_id": "VEND-018",
+        "name": "QuickShip Distributers",  # sic — typo in the source invoice
+        "aliases": ["QuickShip", "FastShip Ltd.", "FastShip"],
+        "address": None,
+        "status": STATUS_NEW,  # Recently rebranded from FastShip Ltd.
         "default_currency": "USD",
     },
 ]
