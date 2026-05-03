@@ -151,11 +151,13 @@ def run_payment_guards(
         payment_method_status = "unknown_vendor"
 
     # 2. Deterministic pre-filter for the LLM payment_review ---------------
+    # Look for prior invoices from this vendor — but EXCLUDE the current one,
+    # since validate may have just written it to the ledger upstream.
     has_history = False
     if vendor is not None:
         row = conn.execute(
-            "SELECT 1 FROM invoice_ledger WHERE vendor = ? LIMIT 1",
-            (vendor.name,),
+            "SELECT 1 FROM invoice_ledger WHERE vendor = ? AND invoice_number != ? LIMIT 1",
+            (vendor.name, invoice.invoice_number),
         ).fetchone()
         has_history = row is not None
 

@@ -239,7 +239,11 @@ def test_aggregator_non_unanimous_blocks_auto_resolve(monkeypatch):
 
 
 def test_aggregator_safety_override_keeps_engine_reject(monkeypatch):
-    """If the LLM tries to override a rule-based reject, the safety net wins."""
+    """If the LLM tries to override a rule-based reject, the safety net wins.
+
+    Uses non-empty opinions so the LLM path is actually exercised (the
+    skip-LLM-on-empty-opinions short-circuit doesn't apply here).
+    """
     _stub_aggregator(
         monkeypatch,
         AggregatedDecision(
@@ -250,7 +254,10 @@ def test_aggregator_safety_override_keeps_engine_reject(monkeypatch):
         ),
     )
     rejected = _decision(status="rejected", role="none", policy=None)
-    final, narrative, err = aggregate(_invoice(), ValidationReport(verdict="reject"), rejected, [])
+    opinions = [
+        ReviewerOpinion(reviewer="fraud", verdict="approve", severity="low", rationale="ok"),
+    ]
+    final, narrative, err = aggregate(_invoice(), ValidationReport(verdict="reject"), rejected, opinions)
     assert final.status == "rejected"
     assert "safety override" in final.justification
 
@@ -271,15 +278,29 @@ def test_aggregator_cannot_auto_approve_needs_review(monkeypatch):
 
 
 def test_aggregator_falls_back_when_llm_unavailable(monkeypatch):
+    """When the LLM is unavailable AND there are reviewer opinions to
+    synthesize, the aggregator falls back to the deterministic path."""
     def _fake(schema, *, system, user, max_retries=2):
         raise RuntimeError("no api key")
 
     import galatiq.agents._llm_helpers as helpers
     monkeypatch.setattr(helpers, "extract_structured", _fake)
-    final, narrative, err = aggregate(_invoice(), ValidationReport(verdict="pass"), _decision(), [])
+    opinions = [
+        ReviewerOpinion(reviewer="fraud", verdict="approve", severity="low", rationale="ok"),
+    ]
+    final, narrative, err = aggregate(_invoice(), ValidationReport(verdict="pass"), _decision(), opinions)
     assert err is not None
     assert final.status == "auto_approved"  # deterministic aggregate keeps engine outcome
     assert narrative
+
+
+def test_aggregator_skips_llm_call_when_no_opinions():
+    """No opinions = council was skipped (clean small invoice). The aggregator
+    uses the deterministic path with zero LLM cost."""
+    final, narrative, err = aggregate(_invoice(), ValidationReport(verdict="pass"), _decision(), [])
+    assert err is None  # deterministic path doesn't error
+    assert final.status == "auto_approved"
+    assert narrative  # narrative is the engine's justification
 
 
 # --- end-to-end with full council in fallback mode ---------------------------

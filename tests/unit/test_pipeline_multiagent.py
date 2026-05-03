@@ -222,21 +222,62 @@ def test_engine_reject_skips_council_and_payment(tmp_path, db_path, receipt_dir,
 # --- pre-approval screener can flip pass to needs_review --------------------
 
 
-def test_pre_approval_fraud_finding_promotes_pass_to_needs_review(tmp_path, db_path, receipt_dir, monkeypatch):
-    """Even on an otherwise clean invoice, the pre_approval_screener can add a
-    fraud finding that flips the verdict, which forces the council to run."""
+def test_pre_approval_skip_gate_fires_on_clean_invoice(tmp_path, db_path, receipt_dir, monkeypatch):
+    """Clean Acme + WidgetA invoice should trip the deterministic pre-approval
+    skip gate — no LLM screening calls, no fraud findings emitted."""
+    monkeypatch.setenv("GALATIQ_LLM_AGENTS", "1")
+    # Stub everything to RAISE if called — proves no LLM call was made.
+    def _fake_extract(schema, *, system, user, max_retries=2):
+        raise AssertionError(f"unexpected LLM call for {schema!r}")
+
+    def _fake_tool_agent(schema, *, system, user, tools, fallback, max_tool_loops=4):
+        raise AssertionError(f"unexpected tool-using LLM call for {schema!r}")
+
+    import galatiq.agents._llm_helpers as helpers
+    monkeypatch.setattr(helpers, "extract_structured", _fake_extract)
+    monkeypatch.setattr(helpers, "run_tool_using_agent", _fake_tool_agent)
+
+    inv = _write(
+        tmp_path / "clean.json",
+        {
+            "invoice_number": "INV-CLEAN-PRE",
+            "vendor": "Acme Corp",
+            "date": "2026-01-01",
+            "due_date": "2099-01-01",
+            "currency": "USD",
+            "line_items": [{"item": "WidgetA", "quantity": 1, "unit_price": "10.00"}],
+            "subtotal": "10.00",
+            "tax": "0.00",
+            "total": "10.00",
+        },
+    )
+    state = run_pipeline(inv, db_path=db_path, receipt_dir=receipt_dir)
+    # Pre-approval skipped → no fraud findings, screener summary is empty.
+    summary = state.get("pre_approval_summary")
+    assert summary is not None
+    assert summary.fraud_findings == []
+    assert summary.risk_severity == "none"
+    # Whole pipeline completed without any LLM call.
+    assert state["report"].verdict == "pass"
+    assert state["decision"].status == "auto_approved"
+    assert state["payment"].status == "scheduled"
+
+
+def test_pre_approval_runs_when_vendor_is_unknown(tmp_path, db_path, receipt_dir, monkeypatch):
+    """When the deterministic gate doesn't fire (e.g. unknown vendor), the
+    LLM screener IS invoked and its findings flow into validate."""
     monkeypatch.setenv("GALATIQ_LLM_AGENTS", "1")
     canned = {
         PreApprovalSummary: PreApprovalSummary(
             fraud_findings=[
                 _ScreenedFinding(
-                    code="round_number_padding",
+                    code="vendor_typosquat",
                     severity="warn",
-                    message="all line items are exact multiples of 100",
+                    message="vendor 'Mystery Vendor' resembles no known canonical name",
                 )
             ],
             risk_severity="medium",
-            risk_hypothesis="Round-number padding pattern detected.",
+            risk_hypothesis="Unknown vendor with typosquat-feeling name.",
         ),
         ReviewerOpinion: _approve_reviewer_opinion(),
     }
@@ -254,10 +295,10 @@ def test_pre_approval_fraud_finding_promotes_pass_to_needs_review(tmp_path, db_p
     monkeypatch.setattr(helpers, "run_tool_using_agent", _fake_tool_agent)
 
     inv = _write(
-        tmp_path / "fraud.json",
+        tmp_path / "unknown.json",
         {
-            "invoice_number": "INV-FRAUD",
-            "vendor": "Acme Corp",
+            "invoice_number": "INV-UNK",
+            "vendor": "Mystery Vendor",
             "date": "2026-01-01",
             "due_date": "2099-01-01",
             "currency": "USD",
@@ -268,10 +309,9 @@ def test_pre_approval_fraud_finding_promotes_pass_to_needs_review(tmp_path, db_p
         },
     )
     state = run_pipeline(inv, db_path=db_path, receipt_dir=receipt_dir)
-    assert any(f.code == "round_number_padding" for f in state["report"].findings)
+    # Skip-gate did NOT fire → screener ran → fraud finding present.
+    assert any(f.code == "vendor_typosquat" for f in state["report"].findings)
     assert state["report"].verdict == "needs_review"
-    # Council ran (not skipped) because verdict is needs_review.
-    assert state.get("council_skipped") is False
     assert state["decision"].status == "pending_human"
 
 
