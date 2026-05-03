@@ -534,11 +534,14 @@ def _render_payment(path: Path) -> None:
     fraud_findings = state.get("fraud_findings") or []
     profile = state.get("vendor_profile")
     risk = state.get("risk_assessment")
-    just = state.get("llm_justification")
-    crit_present = state.get("critique") is not None
+    council_profile = state.get("council_profile")
+    opinions = state.get("reviewer_opinions") or []
+    reviewer_traces = state.get("reviewer_traces") or {}
+    pre_council = state.get("pre_council_decision")
+    narrative = state.get("audit_narrative")
     llm_errs = state.get("llm_agent_errors") or []
 
-    if fraud_findings or profile or risk or just or crit_present or llm_errs:
+    if fraud_findings or profile or risk or council_profile or opinions or narrative or llm_errs:
         st.markdown("---")
         st.markdown("**LLM specialists**")
         if fraud_findings or state.get("fraud_tool_trace"):
@@ -574,23 +577,46 @@ def _render_payment(path: Path) -> None:
                     st.markdown("**Items to verify:**")
                     for item in risk.items_to_verify:
                         st.write(f"- {item}")
-        crit = state.get("critique")
-        pre = state.get("pre_critique_decision")
-        if crit is not None and crit.action != "confirm" and pre is not None:
-            with st.expander("⚖️ Critic override", expanded=True):
-                st.warning(f"**{crit.action}** — {crit.rationale}")
-                st.caption(
-                    f"pre-critique: `{pre.status}` ({pre.approver_role}, {pre.policy_id or '—'}) "
-                    f"→ post-critique: `{decision.status}` ({decision.approver_role}, "
-                    f"{decision.policy_id or '—'})"
-                )
-        elif crit is not None and crit.action == "confirm":
-            with st.expander("⚖️ Critic confirmed"):
-                st.caption(crit.rationale)
+        if council_profile is not None or opinions:
+            label = (
+                f"🏛️ Approval council — profile `{council_profile.name}`"
+                if council_profile is not None
+                else "🏛️ Approval council"
+            )
+            with st.expander(label, expanded=True):
+                if council_profile is not None:
+                    st.caption(
+                        f"Reviewers: {', '.join(council_profile.reviewers) or '(none)'} · "
+                        f"max tool loops/reviewer: {council_profile.max_tool_loops_per_reviewer} · "
+                        f"{council_profile.rationale}"
+                    )
+                for op in opinions:
+                    color_map = {"low": "info", "medium": "warning", "high": "error"}
+                    fn = {"info": st.info, "warning": st.warning, "error": st.error}[
+                        color_map.get(op.severity, "info")
+                    ]
+                    fn(f"**{op.reviewer.upper()}** ({op.severity}) — `{op.verdict}` · {op.rationale}")
+                    tr = reviewer_traces.get(op.reviewer) or []
+                    if tr:
+                        st.caption("Tools called: " + " → ".join(f"`{t}`" for t in tr))
+                    if op.concerns:
+                        for c in op.concerns:
+                            st.caption(f"• {c}")
+                if pre_council is not None and (pre_council.status, pre_council.policy_id) != (
+                    decision.status,
+                    decision.policy_id,
+                ):
+                    st.warning(
+                        "**Aggregator override**: "
+                        f"`{pre_council.status}` ({pre_council.approver_role}, "
+                        f"{pre_council.policy_id or '—'}) → "
+                        f"`{decision.status}` ({decision.approver_role}, "
+                        f"{decision.policy_id or '—'})"
+                    )
 
-        if just is not None:
+        if narrative:
             with st.expander("📝 Audit narrative", expanded=True):
-                st.write(just.text)
+                st.write(narrative)
         if llm_errs:
             with st.expander(f"⚠️ LLM fallbacks ({len(llm_errs)})"):
                 for e in llm_errs:

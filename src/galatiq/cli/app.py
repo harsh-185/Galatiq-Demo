@@ -8,8 +8,10 @@ from pathlib import Path
 import typer
 from dotenv import load_dotenv
 
-from galatiq.agents.approval import approve
+from galatiq.agents.approval import ApprovalDecision, approve
 from galatiq.agents.ingestion import ingest
+from galatiq.agents.payment import pay as pay_agent
+from galatiq.agents.payment_guards import run_payment_guards
 from galatiq.agents.pipeline import run_pipeline
 from galatiq.agents.validation import validate
 from galatiq.db import (
@@ -18,15 +20,21 @@ from galatiq.db import (
     SEED_INVENTORY,
     SEED_VENDORS,
     connect,
+    get_review_entry,
     init_db,
     list_approvals,
     list_inventory,
     list_payments,
+    list_pending_reviews,
     list_policies,
     list_vendors,
+    lookup_vendor,
     record_approval,
     record_invoice,
+    record_payment,
+    resolve_review,
 )
+from galatiq.payments.receipt import render_receipt, write_receipt
 
 app = typer.Typer(add_completion=False, help="Galatiq invoice automation CLI")
 
@@ -266,20 +274,48 @@ def pay_cmd(
         for item in risk.items_to_verify:
             typer.echo(f"  verify  → {item}")
 
-    crit = state.get("critique")
-    pre = state.get("pre_critique_decision")
-    if crit is not None and pre is not None and crit.action != "confirm":
-        typer.echo("critic override:")
-        typer.echo(f"  pre  : {pre.status} ({pre.approver_role}, {pre.policy_id or '—'})")
-        typer.echo(f"  post : {decision.status} ({decision.approver_role}, {decision.policy_id or '—'})")
-        typer.echo(f"  reason: {crit.rationale}")
-    elif crit is not None and crit.action == "confirm":
-        typer.echo(f"critic       : confirmed — {crit.rationale}")
+    profile_obj = state.get("council_profile")
+    opinions = state.get("reviewer_opinions") or []
+    reviewer_traces = state.get("reviewer_traces") or {}
+    pre_council = state.get("pre_council_decision")
+    if profile_obj is not None or opinions:
+        if profile_obj is not None:
+            typer.echo(f"council      : profile={profile_obj.name}  reviewers={','.join(profile_obj.reviewers) or '(none)'}")
+            typer.echo(f"               {profile_obj.rationale}")
+        for op in opinions:
+            typer.echo(f"  [{op.reviewer}/{op.severity}] {op.verdict}: {op.rationale}")
+            for c in op.concerns[:3]:
+                typer.echo(f"    concern: {c}")
+            tr = reviewer_traces.get(op.reviewer) or []
+            for t in tr[:5]:
+                typer.echo(f"    tool → {t}")
 
-    just = state.get("llm_justification")
-    if just is not None:
+    if pre_council is not None and (pre_council.status, pre_council.policy_id) != (decision.status, decision.policy_id):
+        typer.echo("aggregator override:")
+        typer.echo(f"  pre  : {pre_council.status} ({pre_council.approver_role}, {pre_council.policy_id or '—'})")
+        typer.echo(f"  post : {decision.status} ({decision.approver_role}, {decision.policy_id or '—'})")
+
+    narrative = state.get("audit_narrative")
+    if narrative:
         typer.echo("audit narrative:")
-        typer.echo(f"  {just.text}")
+        typer.echo(f"  {narrative}")
+
+    guard = state.get("payment_guard_report")
+    if guard is not None:
+        typer.echo(f"payment guards : approved={guard.approved}  rail_status={guard.payment_method_status}")
+        if guard.near_dup_trace:
+            typer.echo("  near-dup tools:")
+            for t in guard.near_dup_trace[:5]:
+                typer.echo(f"    → {t}")
+        for b in guard.blockers:
+            typer.echo(f"  blocker: {b}")
+        for w in guard.warnings:
+            typer.echo(f"  warn   : {w}")
+        typer.echo(f"  critic : {guard.critic_action} — {guard.critic_rationale}")
+
+    review_id = state.get("human_review_id")
+    if review_id is not None:
+        typer.echo(f"human review queued as id={review_id}; resolve with `human resolve --id {review_id}`")
 
     llm_errs = state.get("llm_agent_errors") or []
     if llm_errs:
@@ -326,6 +362,149 @@ def audit_log_cmd(
             f"{r['recorded_at']:<26} {r['reference']:<40} {r['rail']:<6} "
             f"{r['status']:<10} {r['amount_usd']:>10}"
         )
+
+
+human_app = typer.Typer(help="Human-in-the-loop review queue commands")
+app.add_typer(human_app, name="human")
+
+
+@human_app.command("review")
+def human_review_cmd(
+    db_path: Path = typer.Option(DEFAULT_DB_PATH, "--db", help="Path to the SQLite file"),
+) -> None:
+    """List unresolved human-review-queue entries."""
+    if not db_path.exists():
+        typer.echo(f"FAILED: reference DB not found at {db_path}", err=True)
+        raise typer.Exit(code=2)
+    with connect(db_path) as conn:
+        rows = list_pending_reviews(conn)
+    if not rows:
+        typer.echo("No pending reviews.")
+        return
+    typer.echo(f"{len(rows)} pending review(s):")
+    typer.echo("-" * 110)
+    typer.echo(f"{'id':<5} {'queued_at':<26} {'invoice':<16} {'vendor':<22} {'role':<10} {'usd':>10}")
+    for r in rows:
+        typer.echo(
+            f"{r['id']:<5} {r['queued_at']:<26} {r['invoice_number']:<16} "
+            f"{r['vendor'][:21]:<22} {r['approver_role']:<10} {r['total_usd']:>10}"
+        )
+        if r["narrative"]:
+            typer.echo(f"      narrative: {r['narrative']}")
+
+
+@human_app.command("resolve")
+def human_resolve_cmd(
+    review_id: int = typer.Option(..., "--id", help="Queue entry id to resolve"),
+    action: str = typer.Option(..., "--action", help="approve | reject"),
+    note: str = typer.Option(None, "--note", help="Reason for the decision"),
+    resolved_by: str = typer.Option("cli-human", "--by", help="Who resolved it"),
+    db_path: Path = typer.Option(DEFAULT_DB_PATH, "--db"),
+    receipts: Path = typer.Option(Path("data/receipts"), "--receipts"),
+) -> None:
+    """Resolve a queued review. ``approve`` re-runs the pay phase with an
+    overridden auto_approved decision; ``reject`` records the rejection."""
+    if action not in ("approve", "reject"):
+        typer.echo("--action must be 'approve' or 'reject'", err=True)
+        raise typer.Exit(code=2)
+    if not db_path.exists():
+        typer.echo(f"FAILED: reference DB not found at {db_path}", err=True)
+        raise typer.Exit(code=2)
+
+    with connect(db_path) as conn:
+        entry = get_review_entry(conn, review_id)
+    if entry is None:
+        typer.echo(f"No review entry id={review_id}", err=True)
+        raise typer.Exit(code=1)
+    if entry["resolved_at"] is not None:
+        typer.echo(f"Entry id={review_id} already resolved at {entry['resolved_at']} as {entry['resolution']}", err=True)
+        raise typer.Exit(code=1)
+
+    with connect(db_path) as conn:
+        resolve_review(conn, review_id=review_id, resolution=action, resolved_by=resolved_by, note=note)
+        # Re-record approval with the human's resolution as the FINAL state.
+        from decimal import Decimal as _D
+        if action == "approve":
+            human_decision = ApprovalDecision(
+                status="auto_approved",
+                approver_role=entry["approver_role"],
+                policy_id=entry["policy_id"],
+                total_usd=_D(entry["total_usd"]),
+                justification=f"human approval ({resolved_by}): {note or 'no note'}",
+                escalations=[],
+            )
+        else:
+            human_decision = ApprovalDecision(
+                status="rejected",
+                approver_role="none",
+                policy_id=None,
+                total_usd=_D(entry["total_usd"]),
+                justification=f"human rejection ({resolved_by}): {note or 'no note'}",
+                escalations=[],
+            )
+        record_approval(
+            conn,
+            invoice_number=entry["invoice_number"],
+            vendor=entry["vendor"],
+            status=human_decision.status,
+            approver_role=human_decision.approver_role,
+            policy_id=human_decision.policy_id,
+            total_usd=human_decision.total_usd,
+        )
+
+    if action == "reject":
+        typer.echo(f"Rejected review id={review_id} for invoice {entry['invoice_number']}.")
+        return
+
+    # Approve path: re-ingest + re-run pay with the overridden decision.
+    source_path = Path(entry["source_path"]) if entry["source_path"] else None
+    if source_path is None or not source_path.exists():
+        typer.echo(
+            f"Approval recorded but source invoice ({entry['source_path']}) is missing — "
+            "cannot re-run pay phase. Ledger reflects approval; payment must be triggered manually.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    load_dotenv()
+    ing = ingest(source_path, allow_llm=True)
+    invoice = ing.invoice
+    with connect(db_path) as conn:
+        vendor = lookup_vendor(conn, invoice.vendor)
+        guard_report, _ = run_payment_guards(invoice, human_decision, vendor=vendor, conn=conn)
+        record = pay_agent(invoice, human_decision, vendor=vendor)
+        receipt_body = None
+        receipt_path = None
+        if record.status == "scheduled" and guard_report.approved:
+            receipt_body = render_receipt(invoice, human_decision, record)
+            written = write_receipt(record, receipt_body, directory=receipts)
+            receipt_path = str(written)
+            from dataclasses import replace as _replace
+            record = _replace(record, receipt_path=receipt_path)
+        elif not guard_report.approved:
+            from dataclasses import replace as _replace
+            record = _replace(
+                record,
+                status="failed",
+                rail="none",
+                notes=record.notes + [f"guard blocker: {b}" for b in guard_report.blockers],
+            )
+        record_payment(
+            conn,
+            reference=record.reference,
+            invoice_number=invoice.invoice_number,
+            vendor=invoice.vendor,
+            rail=record.rail,
+            status=record.status,
+            amount_usd=record.amount_usd,
+            currency_paid=record.currency_paid,
+            amount_paid=record.amount_paid,
+            scheduled_for=record.scheduled_for.isoformat() if record.scheduled_for else None,
+            receipt_path=receipt_path,
+        )
+    typer.echo(f"Resolved review id={review_id}: payment {record.status}, rail={record.rail}, ref={record.reference}")
+    if receipt_path:
+        typer.echo(f"receipt: {receipt_path}")
 
 
 @app.command("db-init")

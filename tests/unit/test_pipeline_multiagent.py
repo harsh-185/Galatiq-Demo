@@ -14,11 +14,11 @@ from pathlib import Path
 
 import pytest
 
-from galatiq.agents.critic import Critique
 from galatiq.agents.fraud_screener import FraudScreenResult, _ScreenedFinding
 from galatiq.agents.investigator import RiskAssessment
-from galatiq.agents.justifier import Justification
 from galatiq.agents.pipeline import run_pipeline
+from galatiq.agents.reviewers import ReviewerOpinion
+from galatiq.agents.reviewers.aggregator import AggregatedDecision
 from galatiq.agents.vendor_onboarding import VendorProfile
 from galatiq.db import connect, init_db
 
@@ -45,9 +45,33 @@ def enable_llm_agents(monkeypatch):
     monkeypatch.setenv("GALATIQ_LLM_AGENTS", "1")
 
 
+def _approve_aggregator_response(decision_status="auto_approved", role="system", policy="TIER-AUTO"):
+    return AggregatedDecision(
+        final_status=decision_status,
+        final_approver_role=role,
+        final_policy_id=policy,
+        audit_narrative="Stub narrative.",
+    )
+
+
+def _approve_reviewer_opinion(name="fraud"):
+    return ReviewerOpinion(
+        reviewer=name,
+        verdict="approve",
+        severity="low",
+        rationale="no concerns",
+    )
+
+
 @pytest.fixture
 def stub_llm(monkeypatch):
-    """Route each schema to a canned response."""
+    """Stub the LLM helpers.
+
+    Strategy: for most schemas return canned data. For ``AggregatedDecision``
+    raise so the aggregator falls back to its deterministic ``aggregate_opinions``
+    path — this means the engine's decision is preserved across tests, which is
+    the behavior the test assertions assume.
+    """
     canned = {
         FraudScreenResult: FraudScreenResult(findings=[]),
         VendorProfile: VendorProfile(
@@ -63,11 +87,12 @@ def stub_llm(monkeypatch):
             recommended_action="request_clarification",
             items_to_verify=["Confirm canonical vendor name"],
         ),
-        Justification: Justification(text="Stub narrative."),
-        Critique: Critique(action="confirm", rationale="rule engine looks correct"),
+        ReviewerOpinion: _approve_reviewer_opinion(),
     }
 
     def _fake_extract(schema, *, system, user, max_retries=2):
+        if schema is AggregatedDecision:
+            raise RuntimeError("force aggregator fallback in tests")
         if schema not in canned:
             raise RuntimeError(f"no stub for {schema!r}")
         return canned[schema], 0
@@ -107,7 +132,7 @@ def test_pass_route_skips_investigator_and_onboarding(tmp_path, db_path, receipt
     assert state.get("risk_assessment") is None
     # fraud_screener and justifier always run.
     assert state.get("fraud_findings") == []
-    assert state["llm_justification"].text == "Stub narrative."
+    assert state.get("audit_narrative") is not None
 
 
 def test_needs_review_route_invokes_investigator(tmp_path, db_path, receipt_dir, stub_llm):
@@ -179,7 +204,7 @@ def test_reject_route_skips_specialists_and_runs_justifier(tmp_path, db_path, re
     assert state.get("risk_assessment") is None
     assert state.get("vendor_profile") is None
     # Justifier still runs to write the audit narrative for the rejection.
-    assert state["llm_justification"].text == "Stub narrative."
+    assert state.get("audit_narrative") is not None
 
 
 def test_fraud_finding_can_promote_pass_to_needs_review(tmp_path, db_path, receipt_dir, monkeypatch):
@@ -201,11 +226,12 @@ def test_fraud_finding_can_promote_pass_to_needs_review(tmp_path, db_path, recei
             recommended_action="request_clarification",
             items_to_verify=["Confirm pricing with vendor"],
         ),
-        Justification: Justification(text="Routed to investigator due to fraud screen."),
-        Critique: Critique(action="confirm", rationale="ok"),
+        ReviewerOpinion: _approve_reviewer_opinion(),
     }
 
     def _fake_extract(schema, *, system, user, max_retries=2):
+        if schema is AggregatedDecision:
+            raise RuntimeError("force fallback")
         return canned[schema], 0
 
     def _fake_tool_agent(schema, *, system, user, tools, fallback, max_tool_loops=4):
@@ -257,7 +283,7 @@ def test_disabled_mode_skips_all_llm_agents(tmp_path, db_path, receipt_dir, monk
     state = run_pipeline(inv, db_path=db_path, receipt_dir=receipt_dir)
     assert state["fraud_findings"] == []
     assert state["payment"].status == "scheduled"
-    # Justifier ran in fallback mode — its output is the canned decision.justification.
-    assert state["llm_justification"].text == state["decision"].justification
+    # Aggregator ran in fallback mode — narrative comes from the deterministic path.
+    assert state.get("audit_narrative") is not None
     # No errors reported because the disabled branch is intentional, not a failure.
     assert state.get("llm_agent_errors") == []

@@ -93,6 +93,33 @@ _DDL = [
         recorded_at    TEXT NOT NULL
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS vendor_payment_methods (
+        vendor_id      TEXT NOT NULL,
+        rail           TEXT NOT NULL,
+        account_ref    TEXT,
+        status         TEXT NOT NULL DEFAULT 'active',
+        PRIMARY KEY (vendor_id, rail)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS human_review_queue (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        invoice_number  TEXT NOT NULL,
+        vendor          TEXT NOT NULL,
+        decision_status TEXT NOT NULL,
+        approver_role   TEXT NOT NULL,
+        policy_id       TEXT,
+        total_usd       NUMERIC NOT NULL,
+        source_path     TEXT,
+        narrative       TEXT,
+        queued_at       TEXT NOT NULL,
+        resolved_at     TEXT,
+        resolved_by     TEXT,
+        resolution      TEXT,
+        resolution_note TEXT
+    )
+    """,
 ]
 
 # Spec-mandated seed: matches the README exactly so the documented test
@@ -114,6 +141,20 @@ SEED_INVENTORY_EXTRA: list[dict[str, Any]] = [
     {"item": "LaserCutterPro", "stock": 3,   "unit_price": "25000.00","category": "equipment",   "status": STATUS_ACTIVE},
     {"item": "PhantomSKU",     "stock": 0,   "unit_price": None,      "category": None,          "status": STATUS_FRAUD},
 ]
+
+SEED_VENDOR_PAYMENT_METHODS: list[dict[str, Any]] = [
+    # Acme Corp — accepts ach (default) and wire for larger amounts.
+    {"vendor_id": "VEND-001", "rail": "ach",   "account_ref": "ACME-ACH-001",  "status": "active"},
+    {"vendor_id": "VEND-001", "rail": "wire",  "account_ref": "ACME-WIRE-001", "status": "active"},
+    # Beta Industries — international wire only.
+    {"vendor_id": "VEND-002", "rail": "wire",  "account_ref": "BETA-WIRE-001", "status": "active"},
+    {"vendor_id": "VEND-002", "rail": "check", "account_ref": "BETA-CHK-001",  "status": "active"},
+    # ShadyVendor — explicitly disabled across all rails (defense-in-depth).
+    {"vendor_id": "VEND-003", "rail": "ach",   "account_ref": None,            "status": "disabled"},
+    # NewCo — pending banking verification.
+    {"vendor_id": "VEND-004", "rail": "ach",   "account_ref": None,            "status": "pending_verification"},
+]
+
 
 SEED_APPROVAL_POLICIES: list[dict[str, Any]] = [
     {"policy_id": "TIER-AUTO", "min_usd": "0",      "max_usd": "1000",   "approver_role": "system"},
@@ -265,6 +306,23 @@ def seed_approval_policies(
     return cur.rowcount
 
 
+def seed_vendor_payment_methods(
+    conn: sqlite3.Connection,
+    rows: Iterable[dict[str, Any]] | None = None,
+) -> int:
+    payload = [
+        (r["vendor_id"], r["rail"], r.get("account_ref"), r.get("status", "active"))
+        for r in (rows if rows is not None else SEED_VENDOR_PAYMENT_METHODS)
+    ]
+    cur = conn.executemany(
+        "INSERT OR IGNORE INTO vendor_payment_methods(vendor_id, rail, account_ref, status) "
+        "VALUES (?,?,?,?)",
+        payload,
+    )
+    conn.commit()
+    return cur.rowcount
+
+
 def seed_defaults(conn: sqlite3.Connection, *, include_extras: bool = True) -> int:
     """Seed reference data. Returns total rows inserted.
 
@@ -272,7 +330,12 @@ def seed_defaults(conn: sqlite3.Connection, *, include_extras: bool = True) -> i
     table. Extras (``SEED_INVENTORY_EXTRA``) cover discontinued, fraud-flag,
     and high-value items used by extended validation tests.
     """
-    inserted = seed_inventory(conn) + seed_vendors(conn) + seed_approval_policies(conn)
+    inserted = (
+        seed_inventory(conn)
+        + seed_vendors(conn)
+        + seed_approval_policies(conn)
+        + seed_vendor_payment_methods(conn)
+    )
     if include_extras:
         inserted += seed_inventory(conn, SEED_INVENTORY_EXTRA)
     return inserted
@@ -488,6 +551,128 @@ def list_approvals(conn: sqlite3.Connection, *, limit: int = 50) -> list[sqlite3
         "FROM approval_log ORDER BY id DESC LIMIT ?",
         (int(limit),),
     ).fetchall()
+
+
+@dataclass(frozen=True)
+class VendorPaymentMethod:
+    vendor_id: str
+    rail: str
+    account_ref: str | None
+    status: str
+
+
+def list_vendor_payment_methods(
+    conn: sqlite3.Connection, vendor_id: str
+) -> list[VendorPaymentMethod]:
+    rows = conn.execute(
+        "SELECT vendor_id, rail, account_ref, status FROM vendor_payment_methods "
+        "WHERE vendor_id = ?",
+        (vendor_id,),
+    ).fetchall()
+    return [
+        VendorPaymentMethod(
+            vendor_id=r["vendor_id"],
+            rail=r["rail"],
+            account_ref=r["account_ref"],
+            status=r["status"],
+        )
+        for r in rows
+    ]
+
+
+def lookup_payment_method(
+    conn: sqlite3.Connection, vendor_id: str, rail: str
+) -> VendorPaymentMethod | None:
+    row = conn.execute(
+        "SELECT vendor_id, rail, account_ref, status FROM vendor_payment_methods "
+        "WHERE vendor_id = ? AND rail = ?",
+        (vendor_id, rail),
+    ).fetchone()
+    if row is None:
+        return None
+    return VendorPaymentMethod(
+        vendor_id=row["vendor_id"],
+        rail=row["rail"],
+        account_ref=row["account_ref"],
+        status=row["status"],
+    )
+
+
+# --- human review queue (HITL) -----------------------------------------------
+
+
+def queue_for_human_review(
+    conn: sqlite3.Connection,
+    *,
+    invoice_number: str,
+    vendor: str,
+    decision_status: str,
+    approver_role: str,
+    policy_id: str | None,
+    total_usd: Decimal,
+    source_path: str | None = None,
+    narrative: str | None = None,
+) -> int:
+    cur = conn.execute(
+        "INSERT INTO human_review_queue("
+        "invoice_number, vendor, decision_status, approver_role, policy_id, "
+        "total_usd, source_path, narrative, queued_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?)",
+        (
+            invoice_number,
+            vendor,
+            decision_status,
+            approver_role,
+            policy_id,
+            str(total_usd),
+            source_path,
+            narrative,
+            datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        ),
+    )
+    conn.commit()
+    return int(cur.lastrowid)
+
+
+def list_pending_reviews(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT id, invoice_number, vendor, decision_status, approver_role, "
+        "policy_id, total_usd, source_path, narrative, queued_at "
+        "FROM human_review_queue WHERE resolved_at IS NULL ORDER BY queued_at"
+    ).fetchall()
+
+
+def get_review_entry(conn: sqlite3.Connection, review_id: int) -> sqlite3.Row | None:
+    return conn.execute(
+        "SELECT id, invoice_number, vendor, decision_status, approver_role, "
+        "policy_id, total_usd, source_path, narrative, queued_at, resolved_at, "
+        "resolved_by, resolution, resolution_note "
+        "FROM human_review_queue WHERE id = ?",
+        (int(review_id),),
+    ).fetchone()
+
+
+def resolve_review(
+    conn: sqlite3.Connection,
+    *,
+    review_id: int,
+    resolution: str,
+    resolved_by: str = "cli",
+    note: str | None = None,
+) -> None:
+    conn.execute(
+        "UPDATE human_review_queue SET "
+        "resolved_at = ?, resolved_by = ?, resolution = ?, resolution_note = ? "
+        "WHERE id = ? AND resolved_at IS NULL",
+        (
+            datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            resolved_by,
+            resolution,
+            note,
+            int(review_id),
+        ),
+    )
+    conn.commit()
 
 
 def list_payments(conn: sqlite3.Connection, *, limit: int = 50) -> list[sqlite3.Row]:
