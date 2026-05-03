@@ -111,7 +111,7 @@ def _merged_tools(db_path: Path):
 
 
 def screen(
-    invoice: Invoice, *, conn: sqlite3.Connection, max_tool_loops: int = 3
+    invoice: Invoice, *, conn: sqlite3.Connection, max_tool_loops: int = 2
 ) -> tuple[PreApprovalSummary, list[Finding], str | None, list[str]]:
     """Run the pre-approval screener.
 

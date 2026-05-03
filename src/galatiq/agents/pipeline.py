@@ -46,6 +46,7 @@ This module is the *only* place that writes to the reference DB or filesystem.
 from __future__ import annotations
 
 import operator
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
 from typing import Annotated, TypedDict
@@ -292,14 +293,14 @@ def _council_node(state: PipelineState) -> PipelineState:
         profile = select_profile(decision.policy_id)
         summary = state.get("pre_approval_summary")
         db_path = state["db_path"]
-        opinions: list[ReviewerOpinion] = []
         traces: dict[str, list[str]] = {}
         errors: list[str] = []
 
-        with connect(db_path) as conn:
-            for reviewer_name in profile.reviewers:
-                review_fn = _REVIEWER_FUNCS[reviewer_name]
-                opinion, err, trace = review_fn(
+        # Run reviewers concurrently. Each opens its own short-lived sqlite
+        # connection — sqlite is thread-safe for independent connections.
+        def _run_one(reviewer_name: str):
+            with connect(db_path) as conn:
+                return reviewer_name, _REVIEWER_FUNCS[reviewer_name](
                     invoice,
                     report,
                     decision,
@@ -307,10 +308,26 @@ def _council_node(state: PipelineState) -> PipelineState:
                     pre_approval_summary=summary,
                     max_tool_loops=profile.max_tool_loops_per_reviewer,
                 )
-                opinions.append(opinion)
-                traces[reviewer_name] = trace
-                if err:
-                    errors.append(f"{reviewer_name}_reviewer: {err}")
+
+        results: dict[str, tuple] = {}
+        if len(profile.reviewers) <= 1:
+            # Sequential fast path for the lite profile (one reviewer).
+            for name in profile.reviewers:
+                _, r = _run_one(name)
+                results[name] = r
+        else:
+            with ThreadPoolExecutor(max_workers=len(profile.reviewers)) as ex:
+                for name, r in ex.map(_run_one, profile.reviewers):
+                    results[name] = r
+
+        # Re-assemble in the canonical reviewer order so output is deterministic.
+        opinions: list[ReviewerOpinion] = []
+        for reviewer_name in profile.reviewers:
+            opinion, err, trace = results[reviewer_name]
+            opinions.append(opinion)
+            traces[reviewer_name] = trace
+            if err:
+                errors.append(f"{reviewer_name}_reviewer: {err}")
 
         ev.summary = (
             f"profile={profile.name}  reviewers={len(profile.reviewers)}  "

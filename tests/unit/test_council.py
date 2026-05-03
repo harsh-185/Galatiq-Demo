@@ -14,7 +14,7 @@ from galatiq.agents.pipeline import run_pipeline
 from galatiq.agents.reviewers import ReviewerOpinion, aggregate_opinions
 from galatiq.agents.reviewers.aggregator import AggregatedDecision, aggregate
 from galatiq.agents.reviewers.profile import select_profile
-from galatiq.agents.validation import ValidationReport
+from galatiq.agents.validation import Finding, ValidationReport
 from galatiq.db import connect, init_db, list_approvals
 from galatiq.models.invoice import Invoice
 
@@ -63,7 +63,10 @@ def test_profile_deep_for_director_and_cfo():
     assert select_profile("TIER-DIR").name == "deep"
     cfo = select_profile("TIER-CFO")
     assert cfo.name == "deepest"
-    assert cfo.max_tool_loops_per_reviewer >= 6
+    # Tightened budget for speed (was 6, now 4); deepest still has the
+    # highest tool budget in the system.
+    assert cfo.max_tool_loops_per_reviewer >= 4
+    assert cfo.max_tool_loops_per_reviewer >= select_profile("TIER-DIR").max_tool_loops_per_reviewer
 
 
 def test_profile_unknown_defaults_to_standard():
@@ -154,6 +157,87 @@ def _stub_aggregator(monkeypatch, response: AggregatedDecision):
     monkeypatch.setattr(helpers, "extract_structured", _fake)
 
 
+def test_aggregator_unanimous_clean_can_auto_resolve_needs_review(monkeypatch):
+    """When all reviewers vote 'approve' with severity='low' and no load-
+    bearing finding is present, the aggregator may flip needs_review →
+    auto_approved. This is the relaxation that empowers the council to
+    decide instead of always deferring to a human."""
+    _stub_aggregator(
+        monkeypatch,
+        AggregatedDecision(
+            final_status="auto_approved",
+            final_approver_role="system",
+            final_policy_id="TIER-AUTO",
+            audit_narrative="Council unanimous-clean; warnings benign.",
+        ),
+    )
+    pending = _decision(status="pending_human", role="manager", policy="TIER-MGR")
+    # vendor_unknown is NOT in the load-bearing list, so unanimous-clean wins.
+    report = ValidationReport(
+        findings=[Finding(code="vendor_unknown", severity="warn", message="not in table")],
+        verdict="needs_review",
+    )
+    opinions = [
+        ReviewerOpinion(reviewer="compliance", verdict="approve", severity="low", rationale="benign"),
+        ReviewerOpinion(reviewer="fraud", verdict="approve", severity="low", rationale="ok"),
+        ReviewerOpinion(reviewer="policy", verdict="approve", severity="low", rationale="ok"),
+    ]
+    final, _, _ = aggregate(_invoice(), report, pending, opinions)
+    assert final.status == "auto_approved"
+
+
+def test_aggregator_load_bearing_finding_blocks_auto_resolve(monkeypatch):
+    """Even with unanimous-clean reviewers, a load-bearing finding (e.g.
+    duplicate_invoice) still forces pending_human."""
+    _stub_aggregator(
+        monkeypatch,
+        AggregatedDecision(
+            final_status="auto_approved",
+            final_approver_role="system",
+            final_policy_id="TIER-AUTO",
+            audit_narrative="trying to bypass",
+        ),
+    )
+    pending = _decision(status="pending_human", role="manager", policy="TIER-MGR")
+    report = ValidationReport(
+        findings=[Finding(code="duplicate_invoice", severity="error", message="dup")],
+        verdict="needs_review",
+    )
+    opinions = [
+        ReviewerOpinion(reviewer="compliance", verdict="approve", severity="low", rationale="ok"),
+        ReviewerOpinion(reviewer="fraud", verdict="approve", severity="low", rationale="ok"),
+        ReviewerOpinion(reviewer="policy", verdict="approve", severity="low", rationale="ok"),
+    ]
+    final, _, _ = aggregate(_invoice(), report, pending, opinions)
+    # Safety net engaged because duplicate_invoice is load-bearing.
+    assert final.status == "pending_human"
+
+
+def test_aggregator_non_unanimous_blocks_auto_resolve(monkeypatch):
+    """A single non-approve reviewer prevents the relaxation."""
+    _stub_aggregator(
+        monkeypatch,
+        AggregatedDecision(
+            final_status="auto_approved",
+            final_approver_role="system",
+            final_policy_id="TIER-AUTO",
+            audit_narrative="trying to bypass",
+        ),
+    )
+    pending = _decision(status="pending_human", role="manager", policy="TIER-MGR")
+    report = ValidationReport(
+        findings=[Finding(code="vendor_unknown", severity="warn", message="not in table")],
+        verdict="needs_review",
+    )
+    opinions = [
+        ReviewerOpinion(reviewer="compliance", verdict="approve", severity="low", rationale="ok"),
+        ReviewerOpinion(reviewer="fraud", verdict="approve_with_notes", severity="medium", rationale="some concern"),
+        ReviewerOpinion(reviewer="policy", verdict="approve", severity="low", rationale="ok"),
+    ]
+    final, _, _ = aggregate(_invoice(), report, pending, opinions)
+    assert final.status == "pending_human"
+
+
 def test_aggregator_safety_override_keeps_engine_reject(monkeypatch):
     """If the LLM tries to override a rule-based reject, the safety net wins."""
     _stub_aggregator(
@@ -228,6 +312,32 @@ def test_pipeline_skips_council_for_clean_small_invoice(tmp_path, monkeypatch):
         rows = list_approvals(conn)
     assert len(rows) == 1
     assert rows[0]["status"] == "auto_approved"
+
+
+def test_pipeline_parallel_council_preserves_canonical_reviewer_order(tmp_path, monkeypatch):
+    """The reviewers run concurrently; output ``reviewer_opinions`` must still
+    be in the canonical profile order regardless of which thread finishes
+    first."""
+    monkeypatch.setenv("GALATIQ_LLM_AGENTS", "0")
+    db = tmp_path / "parallel.db"
+    init_db(db)
+    inv_path = tmp_path / "midsize.json"
+    inv_path.write_text(json.dumps({
+        "invoice_number": "INV-PAR",
+        "vendor": "Acme Corp",
+        "date": "2026-01-01",
+        "due_date": "2099-01-01",
+        "currency": "USD",
+        "line_items": [{"item": "BoltPack", "quantity": 400, "unit_price": "5.00"}],
+        "subtotal": "2000.00",
+        "tax": "0.00",
+        "total": "2000.00",
+    }))
+    state = run_pipeline(inv_path, db_path=db, receipt_dir=tmp_path / "r")
+    # Standard profile → 3 reviewers in canonical order.
+    assert state["council_profile"].name == "standard"
+    actual_order = [o.reviewer for o in state["reviewer_opinions"]]
+    assert actual_order == ["compliance", "fraud", "policy"]
 
 
 def test_pipeline_runs_full_council_for_manager_tier(tmp_path, monkeypatch):
