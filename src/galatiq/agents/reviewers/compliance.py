@@ -26,10 +26,13 @@ Cite specific finding codes or DB facts. Concise.
 
 
 def _fallback() -> ReviewerOpinion:
+    # severity="medium" so the unanimous-clean relaxation in the aggregator
+    # does NOT fire on deterministic-mode runs — relaxation requires real
+    # LLM agreement (severity="low" from the model).
     return ReviewerOpinion(
         reviewer="compliance",
         verdict="approve",
-        severity="low",
+        severity="medium",
         rationale="LLM unavailable; deferring to rule engine.",
     )
 

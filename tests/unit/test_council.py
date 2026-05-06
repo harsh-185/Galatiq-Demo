@@ -157,6 +157,57 @@ def _stub_aggregator(monkeypatch, response: AggregatedDecision):
     monkeypatch.setattr(helpers, "extract_structured", _fake)
 
 
+def test_aggregator_can_auto_approve_tier_mgr_with_unanimous_clean_council(monkeypatch):
+    """TIER-MGR ($10k-$50k) + clean verdict + unanimous-clean council can
+    auto-approve. The AI council handles mid-tier decisions; humans only
+    needed for genuinely ambiguous cases or TIER-CFO."""
+    _stub_aggregator(
+        monkeypatch,
+        AggregatedDecision(
+            final_status="auto_approved",
+            final_approver_role="system",
+            final_policy_id="TIER-MGR",
+            audit_narrative="$25k clean Acme order; council unanimous; auto-approve.",
+        ),
+    )
+    pending = _decision(status="pending_human", role="manager", policy="TIER-MGR", total=Decimal("25000"))
+    report = ValidationReport(findings=[], verdict="pass")
+    opinions = [
+        ReviewerOpinion(reviewer="compliance", verdict="approve", severity="low", rationale="ok"),
+        ReviewerOpinion(reviewer="fraud", verdict="approve", severity="low", rationale="ok"),
+        ReviewerOpinion(reviewer="policy", verdict="approve", severity="low", rationale="ok"),
+    ]
+    final, _, _ = aggregate(_invoice(), report, pending, opinions)
+    assert final.status == "auto_approved"
+    assert final.policy_id == "TIER-MGR"
+
+
+def test_aggregator_cannot_auto_approve_tier_cfo_even_when_clean(monkeypatch):
+    """TIER-CFO ($200k+) ALWAYS requires human sign-off (fiduciary policy),
+    even when the council is unanimous-clean."""
+    _stub_aggregator(
+        monkeypatch,
+        AggregatedDecision(
+            final_status="auto_approved",
+            final_approver_role="system",
+            final_policy_id="TIER-CFO",
+            audit_narrative="trying to bypass CFO sign-off",
+        ),
+    )
+    pending = _decision(status="pending_human", role="cfo", policy="TIER-CFO", total=Decimal("250000"))
+    report = ValidationReport(findings=[], verdict="pass")
+    opinions = [
+        ReviewerOpinion(reviewer="compliance", verdict="approve", severity="low", rationale="ok"),
+        ReviewerOpinion(reviewer="fraud", verdict="approve", severity="low", rationale="ok"),
+        ReviewerOpinion(reviewer="policy", verdict="approve", severity="low", rationale="ok"),
+    ]
+    final, _, _ = aggregate(_invoice(), report, pending, opinions)
+    # Safety net engages — CFO tier always requires human.
+    assert final.status == "pending_human"
+    assert final.approver_role == "cfo"
+    assert "TIER-CFO" in final.justification
+
+
 def test_aggregator_unanimous_clean_can_auto_resolve_needs_review(monkeypatch):
     """When all reviewers vote 'approve' with severity='low' and no load-
     bearing finding is present, the aggregator may flip needs_review →

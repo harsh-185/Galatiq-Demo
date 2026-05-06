@@ -25,10 +25,12 @@ Default lower severity unless you have concrete signals. Don't invent patterns. 
 
 
 def _fallback() -> ReviewerOpinion:
+    # severity="medium" so deterministic-mode runs don't trigger the
+    # unanimous-clean aggregator relaxation; that requires real LLM agreement.
     return ReviewerOpinion(
         reviewer="fraud",
         verdict="approve",
-        severity="low",
+        severity="medium",
         rationale="LLM unavailable; deferring to rule engine.",
     )
 

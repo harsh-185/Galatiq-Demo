@@ -29,7 +29,10 @@ _SYSTEM_WITH_COUNCIL = """\
 You synthesize a council's opinions into a final approval decision + 2-3 sentence audit narrative.
 Hard rules:
 - engine 'rejected' MUST stay rejected
-- engine 'pending_human' may become 'auto_approved' ONLY when ALL reviewers said approve+low and no load-bearing finding exists (vendor_blocked, fraud_flag_sku, duplicate_invoice, stock_overflow, zero_stock, negative_quantity, empty_vendor)
+- engine 'pending_human' may become 'auto_approved' ONLY when:
+    1. ALL reviewers said approve + severity=low,
+    2. no load-bearing finding (vendor_blocked, fraud_flag_sku, duplicate_invoice, negative_quantity, empty_vendor),
+    3. policy_id is TIER-AUTO, TIER-MGR, or TIER-DIR (TIER-CFO always requires human sign-off, fiduciary policy)
 - engine 'pending_human' may become 'rejected' if reviewers found material risk
 - engine 'auto_approved' may stay or downgrade to 'pending_human' on reviewer concerns
 Cite at least one reviewer or finding code in the narrative. Be specific and concise.
@@ -183,20 +186,28 @@ def aggregate(
             justification=f"safety override: rule engine rejected — {decision.justification}",
             escalations=decision.escalations,
         )
-    if report.verdict == "needs_review" and final.status == "auto_approved":
-        # Allow the aggregator to resolve needs_review → auto_approved ONLY when:
+    if decision.status == "pending_human" and final.status == "auto_approved":
+        # The aggregator wants to relax engine pending_human → auto_approved.
+        # Allowed ONLY when:
         #   • the council voted unanimous-clean (every reviewer approve+low), AND
         #   • no load-bearing finding is present (vendor_blocked, fraud_flag_sku,
-        #     duplicate_invoice, stock_overflow, zero_stock, etc.)
-        # Otherwise force pending_human — the LLM doesn't get to override on
-        # cases the rule engine flagged with hard signals.
-        if not (_council_is_unanimous_clean(opinions) and not _has_load_bearing_finding(report)):
+        #     duplicate_invoice, negative_quantity, empty_vendor), AND
+        #   • the tier is not TIER-CFO (CFO always requires human sign-off
+        #     for fiduciary reasons; this is policy, not safety).
+        unanimous_clean = _council_is_unanimous_clean(opinions)
+        has_load_bearing = _has_load_bearing_finding(report)
+        cfo_tier = decision.policy_id == "TIER-CFO"
+        can_relax = unanimous_clean and not has_load_bearing and not cfo_tier
+        if not can_relax:
+            reason = "needs council unanimous-clean + no load-bearing"
+            if cfo_tier:
+                reason = "TIER-CFO always requires human sign-off"
             final = ApprovalDecision(
                 status="pending_human",
-                approver_role=final.approver_role if final.approver_role != "system" else "manager",
-                policy_id=final.policy_id or "TIER-MGR",
+                approver_role=decision.approver_role,  # preserve engine's tier role
+                policy_id=decision.policy_id,
                 total_usd=decision.total_usd,
-                justification=f"safety override: needs_review cannot auto-approve without unanimous-clean council — {final.justification}",
+                justification=f"safety override: {reason} — {final.justification}",
                 escalations=decision.escalations,
             )
     return final, aggregated.audit_narrative, err
