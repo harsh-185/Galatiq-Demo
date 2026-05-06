@@ -44,17 +44,20 @@ Cite the policy band, total, and any escalations or findings if present.
 
 # Findings the rule engine considers load-bearing — the aggregator cannot
 # auto-resolve a pending_human case when any of these are present, even if
-# the LLM tries. These map to errors that should always have a human eye.
+# the LLM tries.
+#
+# Stock findings (stock_overflow, zero_stock) are NOT load-bearing because
+# they're inventory-availability concerns, not fundamental legitimacy
+# concerns; AP teams routinely approve over-stock orders as backorders.
+# Math-mismatch findings (subtotal_mismatch, total_mismatch) are not in
+# this list either — they're already handled by severity (error >2%
+# discrepancy → reject regardless; warn ≤2% → council can decide).
 _LOAD_BEARING_FINDING_CODES = frozenset({
     "vendor_blocked",
     "fraud_flag_sku",
-    "duplicate_invoice",
-    "stock_overflow",
-    "zero_stock",
+    "duplicate_invoice",  # the strict variant; revisions emit invoice_revision instead
     "negative_quantity",
     "empty_vendor",
-    "subtotal_mismatch",
-    "total_mismatch",
 })
 
 

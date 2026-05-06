@@ -43,7 +43,9 @@ def test_clean_invoice_passes(db_conn):
     assert report.findings == []
 
 
-def test_stock_overflow_rejects(db_conn):
+def test_stock_overflow_warns(db_conn):
+    """Stock overflow is a warning, not a hard reject — could be a legitimate
+    backorder. Council/aggregator decide."""
     inv = _invoice(
         line_items=[{"item": "GadgetX", "quantity": 20, "unit_price": "50.00"}],
         subtotal="1000.00",
@@ -51,7 +53,7 @@ def test_stock_overflow_rejects(db_conn):
     )
     report = validate(inv, conn=db_conn)
     assert "stock_overflow" in _codes(report)
-    assert report.verdict == "reject"
+    assert report.verdict == "needs_review"
 
 
 def test_fraud_flag_sku_rejects(db_conn):
@@ -65,8 +67,9 @@ def test_fraud_flag_sku_rejects(db_conn):
     assert report.verdict == "reject"
 
 
-def test_zero_stock_fakeitem_rejects(db_conn):
-    """Spec scenario: FakeItem has stock=0 → rejected as out of stock."""
+def test_zero_stock_fakeitem_warns(db_conn):
+    """Zero stock is a warning, not a hard reject — could be a legitimate
+    backorder. Council/aggregator decide."""
     inv = _invoice(
         line_items=[{"item": "FakeItem", "quantity": 1, "unit_price": "9.99"}],
         subtotal="9.99",
@@ -74,7 +77,7 @@ def test_zero_stock_fakeitem_rejects(db_conn):
     )
     report = validate(inv, conn=db_conn)
     assert "zero_stock" in _codes(report)
-    assert report.verdict == "reject"
+    assert report.verdict == "needs_review"
 
 
 def test_unknown_sku_warns(db_conn):
