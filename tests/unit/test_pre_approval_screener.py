@@ -172,3 +172,48 @@ def test_screener_drops_disallowed_finding_codes(monkeypatch, db_conn):
     assert "round_number_padding" not in codes, "disallowed code must be filtered out"
     assert "vendor_typosquat" in codes
     assert {f.code for f in summary.fraud_findings} == {"vendor_typosquat"}
+
+
+def test_screener_drops_hedged_findings(monkeypatch, db_conn):
+    """Regression: even if the LLM emits an allowed code like
+    'category_mismatch', the post-filter must drop findings whose message
+    admits non-verification (e.g. 'Unable to verify… missing catalog data').
+    Those polluted the audit log on INV-1010 and re-introduced the
+    false-positive-downgrade class for clean invoices."""
+    _stub(
+        monkeypatch,
+        PreApprovalSummary(
+            fraud_findings=[
+                _ScreenedFinding(
+                    code="category_mismatch",
+                    severity="warn",
+                    message="Unable to verify category for WidgetA due to missing catalog data.",
+                ),
+                _ScreenedFinding(
+                    code="category_mismatch",
+                    severity="warn",
+                    message="Cannot assess amount; no history for vendor.",
+                ),
+                _ScreenedFinding(
+                    code="vendor_typosquat",
+                    severity="warn",
+                    message="Acme Corp vs Acrne Corp differs by 1 edit, shares 'Acme' brand keyword.",
+                ),
+            ],
+            risk_severity="low",
+        ),
+    )
+    summary, findings, _, _ = pre_approval_screener.screen(_invoice(), conn=db_conn)
+    codes = [f.code for f in findings]
+    assert codes == ["vendor_typosquat"], "hedged findings must be filtered"
+    assert {f.code for f in summary.fraud_findings} == {"vendor_typosquat"}
+
+
+def test_is_hedged_phrase_matching():
+    from galatiq.agents.pre_approval_screener import _is_hedged
+    assert _is_hedged("Unable to verify the SKU.") is True
+    assert _is_hedged("Missing catalog data for WidgetA.") is True
+    assert _is_hedged("No history for vendor X to compare against.") is True
+    assert _is_hedged("Vendor name 'Acrne Corp' is 1 edit away from 'Acme Corp'.") is False
+    assert _is_hedged("Total $5000 exceeds threshold") is False
+    assert _is_hedged("") is False
