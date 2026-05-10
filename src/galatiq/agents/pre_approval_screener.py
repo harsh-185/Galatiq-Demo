@@ -47,8 +47,12 @@ Produce: fraud_findings (codes: vendor_typosquat | category_mismatch | suspiciou
 
 What COUNTS as a finding (must be cited with concrete evidence):
 - vendor_typosquat: the invoice vendor differs from a *known* vendor by ≤2 character edits AND shares a brand keyword (e.g. "Acme Corp" vs "Acrne Corp"). Different legal-entity suffixes ("X Corp" vs "X Services LLC") are NOT typosquats.
-- category_mismatch: a line item exists in the catalog with a category that is incompatible with the invoice description (e.g. catalog 'hardware' but invoice line says 'consulting hours'). Identical names with different SKUs are NOT mismatches.
+- category_mismatch: requires you to first call lookup_catalog_item, get back a CONCRETE category value, and observe that it conflicts with what the invoice line says. The finding's message MUST cite both categories (e.g. "catalog says 'hardware' but line description suggests 'consulting'"). If lookup_catalog_item returns found=False, the right finding is unknown_sku — but that's emitted by deterministic validate, not by you, so SKIP it.
 - suspicious_invoice_number: invoice_number contains obvious tells (placeholder text, "TEST", impossibly low/high sequential numbers, control characters). Numeric IDs that just look unusual to you are NOT findings.
+
+IMPORTANT — uncertainty is NOT a finding:
+- If you couldn't verify something (the tool returned no data, or the catalog/vendor record was incomplete), emit NO finding. The downstream rule engine catches genuine catalog gaps with its own unknown_sku code.
+- Never use a finding to express "I'm not sure" or "I couldn't confirm". Phrases like "unable to verify", "missing data", "cannot assess", "insufficient information" must NOT appear in any finding's message.
 
 What is NOT a fraud signal (do NOT emit findings for these):
 - Round-number totals like $1000, $5000, $10000 — these are routine in finance (consulting retainers, SaaS, bulk orders, contract milestones). Round numbers alone are never a finding.
@@ -117,11 +121,15 @@ def screen(
         fallback=_fallback,
         max_tool_loops=max_tool_loops,
     )
-    # Belt-and-suspenders: even if the LLM ignored the prompt and emitted a
-    # disallowed code (e.g. round_number_padding), drop it before it can
-    # influence validation or aggregator decisions.
+    # Belt-and-suspenders post-filters (the LLM still occasionally ignores
+    # the prompt). Apply both:
+    #   1. drop findings whose code isn't in the allowed set;
+    #   2. drop findings whose message admits uncertainty rather than citing
+    #      a concrete signal — those pollute the audit log and re-introduce
+    #      the false-positive-downgrade class of bug.
     summary.fraud_findings = [
-        f for f in summary.fraud_findings if f.code in _ALLOWED_FRAUD_CODES
+        f for f in summary.fraud_findings
+        if f.code in _ALLOWED_FRAUD_CODES and not _is_hedged(f.message)
     ]
     findings = [
         Finding(code=f.code, severity=f.severity, message=f.message, field=f.field)
@@ -135,6 +143,31 @@ _ALLOWED_FRAUD_CODES = frozenset({
     "category_mismatch",
     "suspicious_invoice_number",
 })
+
+
+_HEDGE_PHRASES = (
+    "unable to verify",
+    "missing catalog",
+    "missing data",
+    "cannot assess",
+    "cannot confirm",
+    "could not confirm",
+    "could not verify",
+    "insufficient data",
+    "insufficient information",
+    "no history",
+    "no prior history",
+    "no record",
+    "not enough information",
+)
+
+
+def _is_hedged(message: str) -> bool:
+    """True if ``message`` admits non-verification rather than citing a fact."""
+    if not message:
+        return False
+    m = message.lower()
+    return any(p in m for p in _HEDGE_PHRASES)
 
 
 def _conn_path(conn: sqlite3.Connection) -> Path:
