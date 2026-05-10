@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 import xml.etree.ElementTree as ET
+from datetime import date as _date
 from io import StringIO
 from pathlib import Path
 from typing import Any
@@ -16,6 +18,38 @@ from typing import Any
 from galatiq.io.pdf import read_pdf
 
 ReadResult = tuple[str, dict[str, Any] | None]
+
+# Year-first formats (ISO-ish): YYYY-MM-DD or YYYY/MM/DD.
+_DATE_ISO_LIKE = re.compile(r"^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$")
+# Month-first formats (US): M/D/YYYY or M-D-YYYY with 1-2 digit M/D.
+_DATE_US = re.compile(r"^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$")
+
+
+def _normalize_date(value: str | None) -> str | None:
+    """Coerce common date strings to ISO ``YYYY-MM-DD``. Returns the input
+    unchanged if it doesn't match a recognised format — downstream Pydantic
+    will then raise a clean ValidationError and the ingestion agent will fall
+    back to the LLM path."""
+    if value is None:
+        return None
+    v = value.strip()
+    if not v:
+        return None
+    m = _DATE_ISO_LIKE.match(v)
+    if m:
+        y, mo, d = (int(x) for x in m.groups())
+        try:
+            return _date(y, mo, d).isoformat()
+        except ValueError:
+            return v
+    m = _DATE_US.match(v)
+    if m:
+        mo, d, y = (int(x) for x in m.groups())
+        try:
+            return _date(y, mo, d).isoformat()
+        except ValueError:
+            return v
+    return v
 
 
 def read_invoice(path: str | Path) -> ReadResult:
@@ -66,8 +100,8 @@ def _from_json(raw: str) -> dict[str, Any] | None:
         "invoice_number": data.get("invoice_number"),
         "vendor": vendor_name,
         "vendor_address": vendor_address,
-        "date": data.get("date"),
-        "due_date": data.get("due_date"),
+        "date": _normalize_date(data.get("date")),
+        "due_date": _normalize_date(data.get("due_date")),
         "currency": data.get("currency", "USD"),
         "line_items": line_items,
         "subtotal": data.get("subtotal"),
@@ -101,8 +135,8 @@ def _from_xml(raw: str) -> dict[str, Any] | None:
         "invoice_number": _t(header.find("invoice_number")),
         "vendor": _t(header.find("vendor")) or "",
         "vendor_address": _t(header.find("vendor_address")),
-        "date": _t(header.find("date")),
-        "due_date": _t(header.find("due_date")),
+        "date": _normalize_date(_t(header.find("date"))),
+        "due_date": _normalize_date(_t(header.find("due_date"))),
         "currency": _t(header.find("currency")) or "USD",
         "line_items": items,
         "subtotal": _t(totals.find("subtotal")),
@@ -142,7 +176,7 @@ def _csv_pivot(rows: list[list[str]]) -> dict[str, Any]:
         elif key == "unit_price":
             pending["unit_price"] = value
         elif key in {"invoice_number", "vendor", "date", "due_date", "subtotal", "total", "tax", "payment_terms", "currency"}:
-            out[key] = value
+            out[key] = _normalize_date(value) if key in {"date", "due_date"} else value
     if pending:
         out["line_items"].append(pending)
     return out
@@ -165,8 +199,8 @@ def _csv_flat(header: list[str], rows: list[list[str]]) -> dict[str, Any]:
         if inv_no:
             out.setdefault("invoice_number", inv_no)
             out.setdefault("vendor", get(row, "vendor") or "")
-            out.setdefault("date", get(row, "date"))
-            out.setdefault("due_date", get(row, "due date"))
+            out.setdefault("date", _normalize_date(get(row, "date")))
+            out.setdefault("due_date", _normalize_date(get(row, "due date")))
             item = get(row, "item")
             qty = get(row, "qty") or get(row, "quantity")
             price = get(row, "unit price")
