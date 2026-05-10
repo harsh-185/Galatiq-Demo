@@ -143,3 +143,32 @@ def test_screener_skipped_when_disabled(monkeypatch, db_conn):
     assert summary.risk_severity == "none"
     assert err is None
     assert trace == []
+
+
+def test_screener_drops_disallowed_finding_codes(monkeypatch, db_conn):
+    """Regression: even if the LLM ignores the prompt and emits a disallowed
+    code like 'round_number_padding', the post-filter must drop it before it
+    can influence validation or aggregator decisions."""
+    _stub(
+        monkeypatch,
+        PreApprovalSummary(
+            fraud_findings=[
+                _ScreenedFinding(
+                    code="round_number_padding",
+                    severity="info",
+                    message="Total $5000 is round.",
+                ),
+                _ScreenedFinding(
+                    code="vendor_typosquat",
+                    severity="warn",
+                    message="Acrne Corp vs Acme Corp (1-edit).",
+                ),
+            ],
+            risk_severity="low",
+        ),
+    )
+    summary, findings, _, _ = pre_approval_screener.screen(_invoice(), conn=db_conn)
+    codes = {f.code for f in findings}
+    assert "round_number_padding" not in codes, "disallowed code must be filtered out"
+    assert "vendor_typosquat" in codes
+    assert {f.code for f in summary.fraud_findings} == {"vendor_typosquat"}

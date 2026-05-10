@@ -34,7 +34,12 @@ Hard rules:
     2. no load-bearing finding (vendor_blocked, fraud_flag_sku, duplicate_invoice, negative_quantity, empty_vendor),
     3. policy_id is TIER-AUTO, TIER-MGR, or TIER-DIR (TIER-CFO always requires human sign-off, fiduciary policy)
 - engine 'pending_human' may become 'rejected' if reviewers found material risk
-- engine 'auto_approved' may stay or downgrade to 'pending_human' on reviewer concerns
+- engine 'auto_approved' MAY downgrade to 'pending_human' ONLY when at least one of:
+    1. a reviewer's verdict is 'reject' or 'escalate_one_tier' or 'escalate_to_cfo', OR
+    2. a finding in the report has severity='warn' or 'error'.
+  An 'approve_with_notes' verdict at severity='low' (or any 'info'-severity finding alone)
+  is NOT sufficient to downgrade — those are confirmatory notes, not concerns. When in
+  doubt, leave 'auto_approved' as-is and put the notes in the narrative.
 Cite at least one reviewer or finding code in the narrative. Be specific and concise.
 """
 
@@ -76,6 +81,23 @@ def _council_is_unanimous_clean(opinions: list[ReviewerOpinion]) -> bool:
 
 def _has_load_bearing_finding(report: ValidationReport) -> bool:
     return any(f.code in _LOAD_BEARING_FINDING_CODES for f in report.findings)
+
+
+def _has_concern_strong_enough_to_downgrade(
+    opinions: list[ReviewerOpinion], report: ValidationReport
+) -> tuple[bool, str]:
+    """A weak signal alone (info finding, approve_with_notes at low severity) must
+    not flip an auto_approved to pending_human. Mirrors the unanimous-clean logic
+    on the upgrade side. Returns (has_real_concern, reason)."""
+    for o in opinions:
+        if o.verdict in {"reject", "escalate_one_tier", "escalate_to_cfo"}:
+            return True, f"reviewer '{o.reviewer}' verdict={o.verdict}"
+        if o.severity in {"medium", "high"}:
+            return True, f"reviewer '{o.reviewer}' severity={o.severity}"
+    for f in report.findings:
+        if f.severity in {"warn", "error"}:
+            return True, f"finding '{f.code}' severity={f.severity}"
+    return False, ""
 
 
 class AggregatedDecision(BaseModel):
@@ -208,6 +230,28 @@ def aggregate(
                 policy_id=decision.policy_id,
                 total_usd=decision.total_usd,
                 justification=f"safety override: {reason} — {final.justification}",
+                escalations=decision.escalations,
+            )
+    if decision.status == "auto_approved" and final.status == "pending_human":
+        # Symmetric guardrail to the relax-side check above. The LLM aggregator
+        # was over-eagerly downgrading clean auto_approved invoices when the
+        # only signal was an info-level finding (e.g. round_number_padding) plus
+        # a reviewer's approve_with_notes at severity=low. Require an actual
+        # concern (warn/error finding OR a reviewer escalation/reject OR
+        # severity ≥ medium) to honor the downgrade.
+        has_concern, concern_reason = _has_concern_strong_enough_to_downgrade(
+            opinions, report
+        )
+        if not has_concern:
+            final = ApprovalDecision(
+                status="auto_approved",
+                approver_role=decision.approver_role,
+                policy_id=decision.policy_id,
+                total_usd=decision.total_usd,
+                justification=(
+                    f"safety override: insufficient concern to downgrade auto_approved "
+                    f"(no warn/error finding, no reviewer escalation) — {final.justification}"
+                ),
                 escalations=decision.escalations,
             )
     return final, aggregated.audit_narrative, err

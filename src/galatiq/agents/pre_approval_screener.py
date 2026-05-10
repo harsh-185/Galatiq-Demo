@@ -43,8 +43,19 @@ class VendorProfile(BaseModel):
 
 _SYSTEM = """\
 Pre-approval screener. Tools: lookup_vendor, lookup_catalog_item, list_known_vendors, list_catalog.
-Produce: fraud_findings (codes: vendor_typosquat | category_mismatch | round_number_padding | suspicious_invoice_number; severity warn|info, never error), items_to_verify (0-5 imperative checks), risk_severity (none|low|medium|high), risk_hypothesis (1 sentence), vendor_profile (only when vendor looks new/unknown).
-Default empty/low. Don't invent concerns. Cite specific facts. Concise.
+Produce: fraud_findings (codes: vendor_typosquat | category_mismatch | suspicious_invoice_number; severity warn|info, never error), items_to_verify (0-5 imperative checks), risk_severity (none|low|medium|high), risk_hypothesis (1 sentence), vendor_profile (only when vendor looks new/unknown).
+
+What COUNTS as a finding (must be cited with concrete evidence):
+- vendor_typosquat: the invoice vendor differs from a *known* vendor by ≤2 character edits AND shares a brand keyword (e.g. "Acme Corp" vs "Acrne Corp"). Different legal-entity suffixes ("X Corp" vs "X Services LLC") are NOT typosquats.
+- category_mismatch: a line item exists in the catalog with a category that is incompatible with the invoice description (e.g. catalog 'hardware' but invoice line says 'consulting hours'). Identical names with different SKUs are NOT mismatches.
+- suspicious_invoice_number: invoice_number contains obvious tells (placeholder text, "TEST", impossibly low/high sequential numbers, control characters). Numeric IDs that just look unusual to you are NOT findings.
+
+What is NOT a fraud signal (do NOT emit findings for these):
+- Round-number totals like $1000, $5000, $10000 — these are routine in finance (consulting retainers, SaaS, bulk orders, contract milestones). Round numbers alone are never a finding.
+- Vendor legal-entity differences (LLC vs Corp vs Inc.).
+- Invoices that are "just on the high side" without a concrete catalog or history reference.
+
+Default empty/low. Don't invent concerns. Cite specific facts (concrete vendor names, SKU codes, exact differences). Concise.
 """
 
 
@@ -106,11 +117,24 @@ def screen(
         fallback=_fallback,
         max_tool_loops=max_tool_loops,
     )
+    # Belt-and-suspenders: even if the LLM ignored the prompt and emitted a
+    # disallowed code (e.g. round_number_padding), drop it before it can
+    # influence validation or aggregator decisions.
+    summary.fraud_findings = [
+        f for f in summary.fraud_findings if f.code in _ALLOWED_FRAUD_CODES
+    ]
     findings = [
         Finding(code=f.code, severity=f.severity, message=f.message, field=f.field)
         for f in summary.fraud_findings
     ]
     return summary, findings, err, trace
+
+
+_ALLOWED_FRAUD_CODES = frozenset({
+    "vendor_typosquat",
+    "category_mismatch",
+    "suspicious_invoice_number",
+})
 
 
 def _conn_path(conn: sqlite3.Connection) -> Path:
