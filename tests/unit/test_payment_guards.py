@@ -204,3 +204,108 @@ def test_pipeline_blocked_vendor_payment_fails(tmp_path):
     assert state["decision"].status == "rejected"  # rule engine rejects vendor_blocked
     assert state.get("payment_guard_report") is None  # guards skipped for rejects
     assert state["payment"].status == "skipped"
+
+
+# --- payment_review LLM guardrails ------------------------------------------
+
+
+def _stub_payment_review(monkeypatch, review_obj):
+    """Force the payment_review LLM call (run_llm_agent or run_tool_using_agent)
+    to return a pre-baked _PaymentReview. Returns the helper that was patched."""
+    import galatiq.agents._llm_helpers as helpers
+    from galatiq.agents.payment_guards import _PaymentReview  # noqa: F401
+
+    def _fake_run_llm(schema, *, system, user, fallback):
+        return review_obj, None
+
+    def _fake_run_tool(schema, *, system, user, tools, fallback, max_tool_loops=4):
+        return review_obj, None, []
+
+    monkeypatch.setattr(helpers, "run_llm_agent", _fake_run_llm)
+    monkeypatch.setattr(helpers, "run_tool_using_agent", _fake_run_tool)
+
+
+def test_payment_review_block_without_citation_demoted_to_warning(monkeypatch, db_conn):
+    """Regression: an LLM payment_review that says action='block' without
+    citing a near-duplicate invoice number must be demoted to a warning so it
+    does not block legitimate payments on vague rationales."""
+    monkeypatch.setenv("GALATIQ_LLM_AGENTS", "1")
+    from galatiq.agents.payment_guards import _PaymentReview
+
+    _stub_payment_review(
+        monkeypatch,
+        _PaymentReview(
+            has_near_duplicate=False,
+            near_dup_invoice_numbers=[],
+            action="block",
+            rationale="amount seems high",
+        ),
+    )
+    vendor = Vendor(
+        vendor_id="VEND-001",
+        name="Acme Corp",
+        aliases=[],
+        address=None,
+        status="active",
+        default_currency="USD",
+    )
+    report, _ = run_payment_guards(_invoice(), _decision(), vendor=vendor, conn=db_conn)
+    assert report.approved is True, "vague block must not gate the payment"
+    assert any("demoted to warning" in w for w in report.warnings)
+    assert report.review_action == "approve_payment"
+
+
+def test_payment_review_near_duplicate_without_citation_demoted(monkeypatch, db_conn):
+    """has_near_duplicate=True must come with at least one cited invoice
+    number; otherwise it's just speculation and gets demoted to a warning."""
+    monkeypatch.setenv("GALATIQ_LLM_AGENTS", "1")
+    from galatiq.agents.payment_guards import _PaymentReview
+
+    _stub_payment_review(
+        monkeypatch,
+        _PaymentReview(
+            has_near_duplicate=True,
+            near_dup_invoice_numbers=[],
+            action="approve_payment",
+            rationale="might be a dup",
+        ),
+    )
+    vendor = Vendor(
+        vendor_id="VEND-001",
+        name="Acme Corp",
+        aliases=[],
+        address=None,
+        status="active",
+        default_currency="USD",
+    )
+    report, _ = run_payment_guards(_invoice(), _decision(), vendor=vendor, conn=db_conn)
+    assert report.approved is True
+    assert any("cited no invoice number" in w for w in report.warnings)
+
+
+def test_payment_review_near_duplicate_with_citation_blocks(monkeypatch, db_conn):
+    """When has_near_duplicate=True AND a real invoice number is cited, the
+    block is honored (the guardrail only catches uncited claims)."""
+    monkeypatch.setenv("GALATIQ_LLM_AGENTS", "1")
+    from galatiq.agents.payment_guards import _PaymentReview
+
+    _stub_payment_review(
+        monkeypatch,
+        _PaymentReview(
+            has_near_duplicate=True,
+            near_dup_invoice_numbers=["INV-PRIOR-9999"],
+            action="approve_payment",
+            rationale="matches INV-PRIOR-9999 within 3 days",
+        ),
+    )
+    vendor = Vendor(
+        vendor_id="VEND-001",
+        name="Acme Corp",
+        aliases=[],
+        address=None,
+        status="active",
+        default_currency="USD",
+    )
+    report, _ = run_payment_guards(_invoice(), _decision(), vendor=vendor, conn=db_conn)
+    assert report.approved is False
+    assert any("INV-PRIOR-9999" in b for b in report.blockers)

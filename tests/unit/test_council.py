@@ -345,6 +345,78 @@ def test_aggregator_falls_back_when_llm_unavailable(monkeypatch):
     assert narrative
 
 
+def test_aggregator_does_not_downgrade_auto_approved_on_info_only_finding(monkeypatch):
+    """Regression: a clean $5,000 invoice with one info-level finding (e.g.
+    round_number_padding) plus a reviewer who approved-with-notes at low
+    severity used to flip auto_approved → pending_human. The symmetric
+    safety guardrail must keep auto_approved."""
+    _stub_aggregator(
+        monkeypatch,
+        AggregatedDecision(
+            final_status="pending_human",  # LLM tries to downgrade
+            final_approver_role="manager",
+            final_policy_id="TIER-AUTO",
+            audit_narrative="Round number total raises a minor flag.",
+        ),
+    )
+    auto = _decision(status="auto_approved", role="system", policy="TIER-AUTO", total=Decimal("5000"))
+    report = ValidationReport(
+        findings=[Finding(code="round_number_padding", severity="info", message="$5000 total")],
+        verdict="pass",
+    )
+    opinions = [
+        ReviewerOpinion(reviewer="fraud", verdict="approve_with_notes", severity="low", rationale="round number"),
+    ]
+    final, _, _ = aggregate(_invoice(), report, auto, opinions)
+    assert final.status == "auto_approved", "info-only signal must not downgrade auto_approved"
+    assert "insufficient concern" in final.justification
+
+
+def test_aggregator_downgrade_honored_on_warn_finding(monkeypatch):
+    """Sanity: when there IS a warn-level finding, the LLM's downgrade is
+    honored (the guardrail only blocks weak signals)."""
+    _stub_aggregator(
+        monkeypatch,
+        AggregatedDecision(
+            final_status="pending_human",
+            final_approver_role="manager",
+            final_policy_id="TIER-AUTO",
+            audit_narrative="vendor_unknown warrants review.",
+        ),
+    )
+    auto = _decision(status="auto_approved", role="system", policy="TIER-AUTO", total=Decimal("5000"))
+    report = ValidationReport(
+        findings=[Finding(code="vendor_unknown", severity="warn", message="not in vendor table")],
+        verdict="pass",
+    )
+    opinions = [
+        ReviewerOpinion(reviewer="fraud", verdict="approve_with_notes", severity="low", rationale="ok"),
+    ]
+    final, _, _ = aggregate(_invoice(), report, auto, opinions)
+    assert final.status == "pending_human"
+
+
+def test_aggregator_downgrade_honored_on_reviewer_escalation(monkeypatch):
+    """If a reviewer says escalate_one_tier (or similar), downgrade is allowed
+    even with no warn-level finding present."""
+    _stub_aggregator(
+        monkeypatch,
+        AggregatedDecision(
+            final_status="pending_human",
+            final_approver_role="director",
+            final_policy_id="TIER-AUTO",
+            audit_narrative="policy reviewer escalated.",
+        ),
+    )
+    auto = _decision(status="auto_approved", role="system", policy="TIER-AUTO", total=Decimal("5000"))
+    report = ValidationReport(findings=[], verdict="pass")
+    opinions = [
+        ReviewerOpinion(reviewer="policy", verdict="escalate_one_tier", severity="medium", rationale="velocity"),
+    ]
+    final, _, _ = aggregate(_invoice(), report, auto, opinions)
+    assert final.status == "pending_human"
+
+
 def test_aggregator_runs_llm_for_narrative_even_when_no_opinions(monkeypatch):
     """No opinions = council was skipped, but the aggregator still produces an
     LLM-written audit narrative (with a concise no-council prompt). The audit

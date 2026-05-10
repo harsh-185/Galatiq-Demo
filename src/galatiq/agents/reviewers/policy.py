@@ -27,13 +27,11 @@ Default approve unless you have a specific concern. Cite facts.
 
 
 def _fallback() -> ReviewerOpinion:
-    # severity="medium" so deterministic-mode runs don't trigger the
-    # unanimous-clean aggregator relaxation; that requires real LLM agreement.
     return ReviewerOpinion(
         reviewer="policy",
         verdict="approve",
-        severity="medium",
-        rationale="LLM unavailable; deferring to rule engine.",
+        severity="low",
+        rationale="LLM unavailable; deferring to rule engine (no concrete policy concerns).",
     )
 
 

@@ -17,21 +17,31 @@ from galatiq.agents.validation import ValidationReport
 from galatiq.models.invoice import Invoice
 
 _SYSTEM = """\
-FRAUD reviewer. Lens: deception patterns (typosquats, round-number padding, anomalous amounts vs vendor history, category mismatches).
+FRAUD reviewer. Lens: deception patterns (typosquats, anomalous amounts vs vendor history, category mismatches).
 Tools: lookup_vendor, list_known_vendors, lookup_catalog_item, recent_invoices_for_vendor.
 Verdict: approve | approve_with_notes | downgrade_to_human | escalate_one_tier | escalate_to_cfo | reject.
-Default lower severity unless you have concrete signals. Don't invent patterns. Cite specific facts.
+
+Operating definitions (use these — do not invent your own):
+- typosquat: invoice vendor name differs from a known vendor by ≤2 character edits AND shares a brand keyword. Different legal-entity suffixes ("X Corp" vs "X Services LLC", "X Inc." vs "X LLC") are NOT typosquats — they are routine business shapes.
+- anomalous amount: total is >2× the vendor's recent ledger average AND >$10k. If the vendor has no ledger history, you cannot make this claim — say "no history, cannot assess" instead.
+- category_mismatch: a line item exists in the catalog but the invoice description requires a different category (e.g. catalog 'hardware' but line says 'consulting hours').
+
+NOT fraud signals (do NOT cite these as concerns; if asked about them, set verdict='approve'):
+- Round-number totals ($1k/$5k/$10k). Routine in finance.
+- Amounts that 'feel high' without a catalog or history reference.
+- Different legal-entity suffixes between similar names.
+
+If you have nothing concrete: verdict='approve', severity='low', rationale='no concrete fraud signals'. Don't reach for findings.
+Cite specific facts (vendor names, SKU codes, invoice numbers, dates) in rationale.
 """
 
 
 def _fallback() -> ReviewerOpinion:
-    # severity="medium" so deterministic-mode runs don't trigger the
-    # unanimous-clean aggregator relaxation; that requires real LLM agreement.
     return ReviewerOpinion(
         reviewer="fraud",
         verdict="approve",
-        severity="medium",
-        rationale="LLM unavailable; deferring to rule engine.",
+        severity="low",
+        rationale="LLM unavailable; deferring to rule engine (no concrete fraud signals).",
     )
 
 

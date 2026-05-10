@@ -59,13 +59,25 @@ You review a proposed payment. Banking already validated. Tools:
 - recent_invoices_for_vendor(vendor, limit) — scan for near-duplicates
 - lookup_vendor / lookup_catalog_item — verify facts
 Decide one: approve_payment | switch_rail | block.
-Default approve_payment. Cite specific invoice numbers/amounts/dates in rationale. Concise.
+
+Default approve_payment.
+
+action='block' is only valid if you can cite a CONCRETE, NAMED reason:
+- has_near_duplicate=true with at least one entry in near_dup_invoice_numbers, where the matching ledger row shares (invoice_number) OR (vendor + total + date within 1 day), OR
+- a banking blocker that contradicts the deterministic check (rare; cite the field), OR
+- a hard finding from the prior pipeline stages (cite the code).
+
+Do NOT block on vague concerns ("unusual timing", "amount seems high", "round number"). If your concern doesn't have a specific invoice number or finding code attached, set action='approve_payment' and put the concern in rationale instead.
+
+action='switch_rail' requires suggested_rail to be set.
+
+Cite specific invoice numbers/amounts/dates in rationale. Concise.
 """
 
 
 _REVIEW_SYSTEM_NARRATIVE = """\
 Write a 1-sentence rationale for this payment. Do not call tools.
-Set action='approve_payment' unless banking is broken (then set to a sensible action with rationale).
+Set action='approve_payment'. There is no ledger history to investigate, so 'block' is not allowed in this mode.
 Output the structured PaymentReview.
 """
 
@@ -175,12 +187,29 @@ def run_payment_guards(
     near_dup_matches = list(review.near_dup_invoice_numbers)
     if err:
         err_summary.append(f"payment_review: {err}")
-    if review.has_near_duplicate:
+    # Guardrails on LLM-emitted blockers:
+    #  - has_near_duplicate=true requires at least one cited invoice number; otherwise demote to a warning
+    #  - action='block' requires either a near-dup citation OR a deterministic reference; otherwise demote to a warning
+    #  - In narrative mode (no tools, no ledger history) we never honour an LLM-emitted block
+    if review.has_near_duplicate and review.near_dup_invoice_numbers:
         blockers.append(
-            f"near-duplicate detected (matches: {', '.join(review.near_dup_invoice_numbers) or 'unspecified'}): {review.rationale}"
+            f"near-duplicate detected (matches: {', '.join(review.near_dup_invoice_numbers)}): {review.rationale}"
         )
+    elif review.has_near_duplicate and not review.near_dup_invoice_numbers:
+        warnings.append(
+            f"payment_review claimed near-duplicate but cited no invoice number; demoted to warning: {review.rationale}"
+        )
+        review_action = "approve_payment"
     elif review.action == "block":
-        blockers.append(f"payment_review blocks: {review.rationale}")
+        if has_history and review.near_dup_invoice_numbers:
+            blockers.append(
+                f"payment_review blocks (cited {', '.join(review.near_dup_invoice_numbers)}): {review.rationale}"
+            )
+        else:
+            warnings.append(
+                f"payment_review requested block without concrete citation; demoted to warning: {review.rationale}"
+            )
+            review_action = "approve_payment"
     elif review.action == "switch_rail" and review.suggested_rail:
         warnings.append(
             f"payment_review recommends rail switch to '{review.suggested_rail}': {review.rationale}"
