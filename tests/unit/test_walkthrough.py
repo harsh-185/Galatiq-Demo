@@ -48,9 +48,13 @@ def test_walkthrough_populated_for_clean_invoice(tmp_path):
         "payment_guards",
         "pay",
     ]
-    # Council and HITL should be skipped on a clean small invoice.
+    # LLM-driven agents always run; only stages that don't apply skip.
+    # On a clean auto_approved invoice, hitl_queue is the one stage that skips
+    # (no human review needed).
     by_name = {ev.name: ev for ev in walkthrough}
-    assert by_name["council"].status == "skipped"
+    assert by_name["pre_approval_screener"].status == "completed"
+    assert by_name["council"].status == "completed"
+    assert by_name["aggregator"].status == "completed"
     assert by_name["hitl_queue"].status == "skipped"
     assert by_name["pay"].status == "completed"
     # Every event has a positive duration.
@@ -74,8 +78,8 @@ def test_walkthrough_summary_stats(tmp_path):
     }))
     state = run_pipeline(inv_path, db_path=db, receipt_dir=tmp_path / "r")
     stats = summary_stats(state["walkthrough"])
-    assert stats["stages_completed"] >= 6
-    assert stats["stages_skipped"] >= 2
+    assert stats["stages_completed"] >= 7  # pre_approval, validate, approve, council, aggregator, payment_guards, pay
+    assert stats["stages_skipped"] >= 1   # hitl_queue (auto_approved → no human review)
     assert stats["stages_failed"] == 0
     assert stats["total_ms"] > 0
     # No LLM calls in disabled mode.

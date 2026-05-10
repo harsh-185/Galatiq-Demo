@@ -52,7 +52,10 @@ def pay_cmd(
         help="Force-enable or disable the LLM specialist agents (default: env-based)",
     ),
 ) -> None:
-    """Run the full pipeline (ingest → fraud-screen → validate → … → pay) via LangGraph."""
+    """Run the full pipeline (ingest → pre-approval screener → validate →
+    approve → council → aggregator → … → pay) via LangGraph. The LLM is
+    always part of the approval loop; on hard rule-engine rejects the
+    council steps aside (rules own hard rejects)."""
     load_dotenv()
     if llm_agents is not None:
         os.environ["GALATIQ_LLM_AGENTS"] = "1" if llm_agents else "0"

@@ -66,9 +66,11 @@ def validate(invoice: Invoice, *, conn: sqlite3.Connection) -> ValidationReport:
 # --- rules --------------------------------------------------------------------
 
 # Ingestion-level codes promoted up to validation severity.
+# Math mismatches (subtotal_mismatch / total_mismatch) are computed dynamically
+# below — error only when the discrepancy is materially large (>2%); minor
+# discrepancies are warns so a human can confirm rather than auto-rejecting
+# on what's usually a typo or rounding error.
 _INGESTION_PROMOTIONS: dict[str, Severity] = {
-    "subtotal_mismatch": "error",
-    "total_mismatch": "error",
     "negative_tax": "error",
     "excessive_tax": "warn",
     "zero_unit_price": "warn",
@@ -78,10 +80,35 @@ _INGESTION_PROMOTIONS: dict[str, Severity] = {
     "empty_vendor": "error",
 }
 
+# Tunable: relative discrepancy at which a math mismatch becomes a hard error.
+MATH_MISMATCH_REJECT_PCT = Decimal("0.02")  # 2%
+
+
+def _math_mismatch_severity(invoice: Invoice, code: str) -> Severity:
+    """For subtotal/total mismatches, choose severity by discrepancy size.
+
+    Above ``MATH_MISMATCH_REJECT_PCT``  → "error" (verdict=reject).
+    At or below the threshold           → "warn"  (verdict=needs_review).
+    """
+    if code == "subtotal_mismatch":
+        computed = sum((li.line_total for li in invoice.line_items), Decimal("0"))
+        stated = invoice.subtotal
+    elif code == "total_mismatch":
+        computed = invoice.subtotal + invoice.tax
+        stated = invoice.total
+    else:
+        return "info"
+    base = max(abs(stated), Decimal("0.01"))
+    pct = abs(computed - stated) / base
+    return "error" if pct > MATH_MISMATCH_REJECT_PCT else "warn"
+
 
 def _check_ingestion_warnings(invoice: Invoice, report: ValidationReport) -> None:
     for w in invoice.ingestion_warnings:
-        severity: Severity = _INGESTION_PROMOTIONS.get(w.code, "info")
+        if w.code in ("subtotal_mismatch", "total_mismatch"):
+            severity = _math_mismatch_severity(invoice, w.code)
+        else:
+            severity = _INGESTION_PROMOTIONS.get(w.code, "info")
         report.add(Finding(code=w.code, severity=severity, message=w.message))
 
 
@@ -129,11 +156,15 @@ def _check_line_items(invoice: Invoice, conn: sqlite3.Connection, report: Valida
             )
 
         if li.quantity > 0:
+            # Stock-availability findings are warnings (not errors). Real AP
+            # workflows often approve over-stock orders as backorders. The
+            # council/aggregator can still recommend rejection if the context
+            # is suspicious; default behavior is needs_review for human review.
             if item.stock == 0 and item.status != STATUS_FRAUD:
                 report.add(
                     Finding(
                         code="zero_stock",
-                        severity="error",
+                        severity="warn",
                         message=f"item {li.item!r} has zero stock; requested {li.quantity}",
                         field=li.item,
                     )
@@ -142,7 +173,7 @@ def _check_line_items(invoice: Invoice, conn: sqlite3.Connection, report: Valida
                 report.add(
                     Finding(
                         code="stock_overflow",
-                        severity="error",
+                        severity="warn",
                         message=(
                             f"requested {li.quantity} of {li.item!r} exceeds stock {item.stock}"
                         ),
@@ -215,20 +246,46 @@ def _check_vendor(invoice: Invoice, conn: sqlite3.Connection, report: Validation
         )
 
 
+_REVISION_MARKERS = ("_revised", "_v2", "_v3", "_amended", "_revision", "_corrected")
+
+
+def _looks_like_revision(invoice: Invoice) -> bool:
+    """Heuristic: does the source path or invoice number indicate this is
+    intentionally a revised/amended version of a previously-paid invoice?"""
+    haystack = f"{invoice.source_path or ''} {invoice.invoice_number}".lower()
+    return any(m in haystack for m in _REVISION_MARKERS)
+
+
 def _check_duplicate(invoice: Invoice, conn: sqlite3.Connection, report: ValidationReport) -> None:
     if not (invoice.invoice_number and invoice.vendor):
         return
     if has_invoice(conn, invoice.invoice_number, invoice.vendor):
-        report.add(
-            Finding(
-                code="duplicate_invoice",
-                severity="error",
-                message=(
-                    f"invoice {invoice.invoice_number!r} from {invoice.vendor!r} already in ledger"
-                ),
-                field="invoice_number",
+        if _looks_like_revision(invoice):
+            # Revisions get a softer finding so a human can decide whether to
+            # supersede the original or treat as duplicate. Distinct from a
+            # silent re-submit (which still hard-rejects).
+            report.add(
+                Finding(
+                    code="invoice_revision",
+                    severity="warn",
+                    message=(
+                        f"invoice {invoice.invoice_number!r} from {invoice.vendor!r} appears to be "
+                        f"a revision (source={invoice.source_path!r}); previous version is in the ledger"
+                    ),
+                    field="invoice_number",
+                )
             )
-        )
+        else:
+            report.add(
+                Finding(
+                    code="duplicate_invoice",
+                    severity="error",
+                    message=(
+                        f"invoice {invoice.invoice_number!r} from {invoice.vendor!r} already in ledger"
+                    ),
+                    field="invoice_number",
+                )
+            )
 
 
 def derive_verdict(findings: Iterable[Finding]) -> Verdict:

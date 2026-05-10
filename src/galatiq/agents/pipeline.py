@@ -73,10 +73,8 @@ from galatiq.agents.validation import (
 )
 from galatiq.db import (
     DEFAULT_DB_PATH,
-    STATUS_ACTIVE,
     connect,
     has_invoice,
-    lookup_item,
     lookup_vendor,
     queue_for_human_review,
     record_approval,
@@ -147,61 +145,15 @@ def _ingest_node(state: PipelineState) -> PipelineState:
         return _emit(ev, ingestion=result)
 
 
-_SERIOUS_INGESTION_WARNINGS = frozenset({
-    "subtotal_mismatch", "total_mismatch", "negative_tax", "implausible_date",
-    "due_before_invoice_date", "empty_vendor", "excessive_tax",
-    "zero_unit_price", "zero_quantity",
-})
-
-
-def _can_skip_pre_approval(state: PipelineState) -> bool:
-    """Deterministic gate: skip the LLM screener when the invoice is structurally
-    clean enough that an LLM has nothing to find.
-
-    All of these must hold:
-      • no serious ingestion warning (math, dates, empty vendor)
-      • vendor known + active in DB
-      • every line item is in the catalog with status=active
-      • quantities are non-negative and within stock
-    """
-    ingestion = state.get("ingestion")
-    if not ingestion:
-        return False
-    invoice = ingestion.invoice
-    if any(w.code in _SERIOUS_INGESTION_WARNINGS for w in invoice.ingestion_warnings):
-        return False
-    with connect(state["db_path"]) as conn:
-        vendor = lookup_vendor(conn, invoice.vendor)
-        if vendor is None or vendor.status != STATUS_ACTIVE:
-            return False
-        for li in invoice.line_items:
-            if li.quantity < 0:
-                return False
-            item = lookup_item(conn, li.item)
-            if item is None or item.status != STATUS_ACTIVE:
-                return False
-            if li.quantity > item.stock:
-                return False
-    return True
-
-
 def _pre_approval_node(state: PipelineState) -> PipelineState:
-    """Single merged screener: fraud findings + items_to_verify + vendor profile."""
+    """Always-on merged screener: an LLM examines every invoice for fraud
+    findings, items to verify, and vendor onboarding signals. No deterministic
+    skip — the LLM is part of the approval loop."""
     with stage_event("pre_approval_screener") as ev:
         if state.get("ingestion") is None:
             ev.status = "skipped"
             ev.summary = "no invoice (ingest failed upstream)"
             return _emit(ev)
-        if _can_skip_pre_approval(state):
-            ev.status = "skipped"
-            ev.summary = "skipped (deterministic gate: known active vendor + all items in catalog + within stock)"
-            from galatiq.agents.pre_approval_screener import PreApprovalSummary
-            return _emit(
-                ev,
-                pre_approval_summary=PreApprovalSummary(),
-                fraud_findings=[],
-                pre_approval_tool_trace=[],
-            )
         invoice = state["ingestion"].invoice
         db_path = state["db_path"]
         with connect(db_path) as conn:
@@ -291,37 +243,9 @@ def _approve_node(state: PipelineState) -> PipelineState:
         return _emit(ev, pre_council_decision=decision, decision=decision)
 
 
-def _can_skip_council(state: PipelineState) -> bool:
-    """Deterministic gate: skip the council only when EVERYTHING is clean.
-
-    All of:
-      • verdict == pass
-      • engine matched TIER-AUTO
-      • zero findings (rule + fraud)
-      • vendor in table with status=active
-    """
-    decision = state.get("decision")
-    report = state.get("report")
-    summary = state.get("pre_approval_summary")
-    ingestion = state.get("ingestion")
-    if not (decision and report and ingestion):
-        return False
-    if decision.status != "auto_approved":
-        return False
-    if decision.policy_id != "TIER-AUTO":
-        return False
-    if report.findings:
-        return False
-    if summary and (summary.fraud_findings or summary.risk_severity not in ("none", "low") or summary.vendor_profile is not None):
-        return False
-    invoice = ingestion.invoice
-    with connect(state["db_path"]) as conn:
-        vendor = lookup_vendor(conn, invoice.vendor)
-    return vendor is not None and vendor.status == STATUS_ACTIVE
-
-
 def _council_node(state: PipelineState) -> PipelineState:
-    """Run the tier-scaled council, OR skip when deterministic gate allows."""
+    """Always-on tier-scaled council. Reviewers run on every approval (except
+    hard rule-engine rejects, where there's nothing to review)."""
     with stage_event("council") as ev:
         if state.get("ingestion") is None or state.get("decision") is None or state.get("report") is None:
             ev.status = "skipped"
@@ -330,11 +254,6 @@ def _council_node(state: PipelineState) -> PipelineState:
         if decision.status == "rejected":
             ev.status = "skipped"
             ev.summary = "skipped (rule engine rejected — rules own hard rejects)"
-            return _emit(ev, council_profile=None, reviewer_opinions=[], reviewer_traces={}, council_skipped=True)
-
-        if _can_skip_council(state):
-            ev.status = "skipped"
-            ev.summary = "skipped (deterministic gate: clean small invoice + known active vendor)"
             return _emit(ev, council_profile=None, reviewer_opinions=[], reviewer_traces={}, council_skipped=True)
 
         invoice = state["ingestion"].invoice

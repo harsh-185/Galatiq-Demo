@@ -84,8 +84,9 @@ def stub_llm(monkeypatch):
 # --- pass route -------------------------------------------------------------
 
 
-def test_clean_small_invoice_skips_council(tmp_path, db_path, receipt_dir, stub_llm):
-    """Clean Acme $10 invoice → TIER-AUTO + clean → council should be skipped."""
+def test_clean_small_invoice_runs_lite_council(tmp_path, db_path, receipt_dir, stub_llm):
+    """Clean Acme $10 invoice → LLM is still part of the approval loop. Council
+    runs the lite profile (1 reviewer)."""
     inv = _write(
         tmp_path / "pass.json",
         {
@@ -104,8 +105,9 @@ def test_clean_small_invoice_skips_council(tmp_path, db_path, receipt_dir, stub_
     assert state["report"].verdict == "pass"
     assert state["decision"].status == "auto_approved"
     assert state["payment"].status == "scheduled"
-    assert state.get("council_skipped") is True
-    assert state.get("reviewer_opinions") == []
+    assert state.get("council_skipped") is False
+    assert state["council_profile"].name == "lite"
+    assert [o.reviewer for o in state["reviewer_opinions"]] == ["fraud"]
     assert state.get("audit_narrative") is not None
 
 
@@ -222,16 +224,30 @@ def test_engine_reject_skips_council_and_payment(tmp_path, db_path, receipt_dir,
 # --- pre-approval screener can flip pass to needs_review --------------------
 
 
-def test_pre_approval_skip_gate_fires_on_clean_invoice(tmp_path, db_path, receipt_dir, monkeypatch):
-    """Clean Acme + WidgetA invoice should trip the deterministic pre-approval
-    skip gate — no LLM screening calls, no fraud findings emitted."""
+def test_pre_approval_screener_runs_on_clean_invoice(tmp_path, db_path, receipt_dir, monkeypatch):
+    """LLM always sits in the approval loop: even on a clean Acme + WidgetA
+    invoice the pre_approval_screener IS invoked."""
     monkeypatch.setenv("GALATIQ_LLM_AGENTS", "1")
-    # Stub everything to RAISE if called — proves no LLM call was made.
+    call_count = {"tool_agent": 0}
+
     def _fake_extract(schema, *, system, user, max_retries=2):
-        raise AssertionError(f"unexpected LLM call for {schema!r}")
+        # Aggregator + payment_review (narrative mode) use this path.
+        from galatiq.agents.reviewers.aggregator import AggregatedDecision
+        from galatiq.agents.payment_guards import _PaymentReview
+        if schema is AggregatedDecision:
+            return AggregatedDecision(
+                final_status="auto_approved",
+                final_approver_role="system",
+                final_policy_id="TIER-AUTO",
+                audit_narrative="Approved.",
+            ), 0
+        if schema is _PaymentReview:
+            return _PaymentReview(action="approve_payment", rationale="ok"), 0
+        raise RuntimeError(f"no stub for {schema!r}")
 
     def _fake_tool_agent(schema, *, system, user, tools, fallback, max_tool_loops=4):
-        raise AssertionError(f"unexpected tool-using LLM call for {schema!r}")
+        call_count["tool_agent"] += 1
+        return fallback(), None, []
 
     import galatiq.agents._llm_helpers as helpers
     monkeypatch.setattr(helpers, "extract_structured", _fake_extract)
@@ -252,15 +268,14 @@ def test_pre_approval_skip_gate_fires_on_clean_invoice(tmp_path, db_path, receip
         },
     )
     state = run_pipeline(inv, db_path=db_path, receipt_dir=receipt_dir)
-    # Pre-approval skipped → no fraud findings, screener summary is empty.
+    # Pre-approval AND council ran — at least 2 tool-using agent calls
+    # (1 for screener, 1+ for council reviewers).
+    assert call_count["tool_agent"] >= 2
     summary = state.get("pre_approval_summary")
     assert summary is not None
-    assert summary.fraud_findings == []
-    assert summary.risk_severity == "none"
-    # Whole pipeline completed without any LLM call.
-    assert state["report"].verdict == "pass"
     assert state["decision"].status == "auto_approved"
     assert state["payment"].status == "scheduled"
+    assert state.get("council_skipped") is False
 
 
 def test_pre_approval_runs_when_vendor_is_unknown(tmp_path, db_path, receipt_dir, monkeypatch):
