@@ -1,0 +1,1853 @@
+[
+  {
+    "id": "INV-1001",
+    "file_path": "data/invoices/invoice_1001.txt",
+    "format": "txt",
+    "category": "happy_path",
+    "ingest": {
+      "expected_vendor": "Widgets Inc.",
+      "expected_total": "5000.00",
+      "expected_currency": "USD",
+      "expected_line_item_count": 2,
+      "expected_path_taken": "llm",
+      "must_not_hallucinate_fields": [],
+      "expected_ingestion_warning_codes": []
+    },
+    "screener": {
+      "expected_risk_severity": "none",
+      "forbidden_finding_codes": [
+        "round_number_padding"
+      ],
+      "forbidden_message_phrases": [
+        "unable to verify",
+        "missing data",
+        "cannot assess",
+        "insufficient information"
+      ],
+      "max_findings": 0
+    },
+    "validate": {
+      "expected_verdict": "pass",
+      "must_include_codes": [],
+      "must_not_include_codes": []
+    },
+    "approve": {
+      "expected_status": "auto_approved",
+      "expected_approver_role": "system",
+      "expected_policy_id": "TIER-AUTO",
+      "expected_total_usd": "5000.00",
+      "usd_tolerance": "0.01"
+    },
+    "council": {
+      "expected_profile": "lite",
+      "expected_reviewer_verdicts_must_include": [
+        "approve"
+      ]
+    },
+    "aggregator": {
+      "expected_final_status": "auto_approved",
+      "narrative_must_cite_terms": [
+        "TIER-AUTO"
+      ],
+      "narrative_must_not_cite_terms": [
+        "round_number_padding"
+      ]
+    },
+    "payment_guards": {
+      "expected_approved": true,
+      "max_blockers": 0
+    },
+    "pay": {
+      "expected_status": "scheduled",
+      "expected_rail": "wire",
+      "expect_receipt_written": true
+    },
+    "trajectory": {
+      "must_visit_stages": [
+        "ingest",
+        "pre_approval_screener",
+        "validate",
+        "approve",
+        "council",
+        "aggregator",
+        "payment_guards",
+        "pay"
+      ],
+      "must_skip_stages": [],
+      "must_pass_gates": []
+    }
+  },
+  {
+    "id": "INV-1002",
+    "file_path": "data/invoices/invoice_1002.txt",
+    "format": "txt",
+    "category": "stock_issue",
+    "ingest": {
+      "expected_vendor": "Gadgets Co.",
+      "expected_total": "15000.00",
+      "expected_currency": "USD",
+      "expected_line_item_count": 1,
+      "expected_path_taken": "llm",
+      "must_not_hallucinate_fields": [],
+      "expected_ingestion_warning_codes": []
+    },
+    "screener": {
+      "expected_risk_severity": "low",
+      "forbidden_finding_codes": [
+        "round_number_padding"
+      ],
+      "forbidden_message_phrases": [
+        "unable to verify",
+        "missing data",
+        "cannot assess",
+        "insufficient information"
+      ],
+      "max_findings": 4
+    },
+    "validate": {
+      "expected_verdict": "needs_review",
+      "must_include_codes": [
+        "stock_overflow"
+      ],
+      "must_not_include_codes": []
+    },
+    "approve": {
+      "expected_status": "pending_human",
+      "expected_approver_role": "manager",
+      "expected_policy_id": "TIER-MGR",
+      "expected_total_usd": "15000.00",
+      "usd_tolerance": "0.01"
+    },
+    "council": {
+      "expected_profile": "standard",
+      "expected_reviewer_verdicts_must_include": []
+    },
+    "aggregator": {
+      "expected_final_status": "pending_human",
+      "narrative_must_cite_terms": [
+        "stock"
+      ],
+      "narrative_must_not_cite_terms": [
+        "round_number_padding"
+      ]
+    },
+    "payment_guards": {
+      "expected_approved": false,
+      "max_blockers": 10
+    },
+    "pay": {
+      "expected_status": "skipped",
+      "expected_rail": "none",
+      "expect_receipt_written": false
+    },
+    "trajectory": {
+      "must_visit_stages": [
+        "ingest",
+        "pre_approval_screener",
+        "validate",
+        "approve",
+        "council",
+        "aggregator",
+        "hitl_queue",
+        "pay"
+      ],
+      "must_skip_stages": [],
+      "must_pass_gates": []
+    }
+  },
+  {
+    "id": "INV-1003",
+    "file_path": "data/invoices/invoice_1003.txt",
+    "format": "txt",
+    "category": "fraud",
+    "ingest": {
+      "expected_vendor": "Fraudster LLC",
+      "expected_total": "100000.00",
+      "expected_currency": "USD",
+      "expected_line_item_count": 1,
+      "expected_path_taken": "llm",
+      "must_not_hallucinate_fields": [],
+      "expected_ingestion_warning_codes": []
+    },
+    "screener": {
+      "expected_risk_severity": "medium",
+      "forbidden_finding_codes": [
+        "round_number_padding"
+      ],
+      "forbidden_message_phrases": [
+        "unable to verify",
+        "missing data",
+        "cannot assess",
+        "insufficient information"
+      ],
+      "max_findings": 4
+    },
+    "validate": {
+      "expected_verdict": "reject",
+      "must_include_codes": [
+        "vendor_blocked",
+        "zero_stock"
+      ],
+      "must_not_include_codes": []
+    },
+    "approve": {
+      "expected_status": "rejected",
+      "expected_approver_role": "none",
+      "expected_policy_id": null,
+      "expected_total_usd": "100000.00",
+      "usd_tolerance": "0.01"
+    },
+    "council": {
+      "expected_profile": null,
+      "expected_reviewer_verdicts_must_include": []
+    },
+    "aggregator": {
+      "expected_final_status": "rejected",
+      "narrative_must_cite_terms": [
+        "vendor_blocked"
+      ],
+      "narrative_must_not_cite_terms": [
+        "round_number_padding"
+      ]
+    },
+    "payment_guards": {
+      "expected_approved": false,
+      "max_blockers": 10
+    },
+    "pay": {
+      "expected_status": "skipped",
+      "expected_rail": "none",
+      "expect_receipt_written": false
+    },
+    "trajectory": {
+      "must_visit_stages": [
+        "ingest",
+        "pre_approval_screener",
+        "validate",
+        "approve",
+        "aggregator",
+        "pay"
+      ],
+      "must_skip_stages": [
+        "council"
+      ],
+      "must_pass_gates": []
+    }
+  },
+  {
+    "id": "INV-1004",
+    "file_path": "data/invoices/invoice_1004.json",
+    "format": "json",
+    "category": "happy_path",
+    "ingest": {
+      "expected_vendor": "Precision Parts Ltd.",
+      "expected_total": "1890.00",
+      "expected_currency": "USD",
+      "expected_line_item_count": 2,
+      "expected_path_taken": "deterministic",
+      "must_not_hallucinate_fields": [],
+      "expected_ingestion_warning_codes": []
+    },
+    "screener": {
+      "expected_risk_severity": "none",
+      "forbidden_finding_codes": [
+        "round_number_padding"
+      ],
+      "forbidden_message_phrases": [
+        "unable to verify",
+        "missing data",
+        "cannot assess",
+        "insufficient information"
+      ],
+      "max_findings": 4
+    },
+    "validate": {
+      "expected_verdict": "pass",
+      "must_include_codes": [],
+      "must_not_include_codes": []
+    },
+    "approve": {
+      "expected_status": "auto_approved",
+      "expected_approver_role": "system",
+      "expected_policy_id": "TIER-AUTO",
+      "expected_total_usd": "1890.00",
+      "usd_tolerance": "0.01"
+    },
+    "council": {
+      "expected_profile": "lite",
+      "expected_reviewer_verdicts_must_include": []
+    },
+    "aggregator": {
+      "expected_final_status": "auto_approved",
+      "narrative_must_cite_terms": [
+        "TIER-AUTO"
+      ],
+      "narrative_must_not_cite_terms": [
+        "round_number_padding"
+      ]
+    },
+    "payment_guards": {
+      "expected_approved": true,
+      "max_blockers": 0
+    },
+    "pay": {
+      "expected_status": "scheduled",
+      "expected_rail": "ach",
+      "expect_receipt_written": true
+    },
+    "trajectory": {
+      "must_visit_stages": [
+        "ingest",
+        "pre_approval_screener",
+        "validate",
+        "approve",
+        "council",
+        "aggregator",
+        "payment_guards",
+        "pay"
+      ],
+      "must_skip_stages": [],
+      "must_pass_gates": []
+    }
+  },
+  {
+    "id": "INV-1004-REV",
+    "file_path": "data/invoices/invoice_1004_revised.json",
+    "format": "json",
+    "category": "revision",
+    "ingest": {
+      "expected_vendor": "Precision Parts Ltd.",
+      "expected_total": "5940.00",
+      "expected_currency": "USD",
+      "expected_line_item_count": 3,
+      "expected_path_taken": "deterministic",
+      "must_not_hallucinate_fields": [],
+      "expected_ingestion_warning_codes": []
+    },
+    "screener": {
+      "expected_risk_severity": "low",
+      "forbidden_finding_codes": [
+        "round_number_padding"
+      ],
+      "forbidden_message_phrases": [
+        "unable to verify",
+        "missing data",
+        "cannot assess",
+        "insufficient information"
+      ],
+      "max_findings": 4
+    },
+    "validate": {
+      "expected_verdict": "needs_review",
+      "must_include_codes": [
+        "invoice_revision"
+      ],
+      "must_not_include_codes": []
+    },
+    "approve": {
+      "expected_status": "pending_human",
+      "expected_approver_role": "system",
+      "expected_policy_id": "TIER-AUTO",
+      "expected_total_usd": "5940.00",
+      "usd_tolerance": "0.01"
+    },
+    "council": {
+      "expected_profile": "lite",
+      "expected_reviewer_verdicts_must_include": []
+    },
+    "aggregator": {
+      "expected_final_status": "pending_human",
+      "narrative_must_cite_terms": [],
+      "narrative_must_not_cite_terms": [
+        "round_number_padding"
+      ]
+    },
+    "payment_guards": {
+      "expected_approved": false,
+      "max_blockers": 10
+    },
+    "pay": {
+      "expected_status": "skipped",
+      "expected_rail": "none",
+      "expect_receipt_written": false
+    },
+    "trajectory": {
+      "must_visit_stages": [
+        "ingest",
+        "pre_approval_screener",
+        "validate",
+        "approve",
+        "council",
+        "aggregator",
+        "hitl_queue",
+        "pay"
+      ],
+      "must_skip_stages": [],
+      "must_pass_gates": []
+    }
+  },
+  {
+    "id": "INV-1005",
+    "file_path": "data/invoices/invoice_1005.json",
+    "format": "json",
+    "category": "stock_issue",
+    "ingest": {
+      "expected_vendor": "Global Supply Chain Partners",
+      "expected_total": "15225.00",
+      "expected_currency": "USD",
+      "expected_line_item_count": 3,
+      "expected_path_taken": "deterministic",
+      "must_not_hallucinate_fields": [],
+      "expected_ingestion_warning_codes": []
+    },
+    "screener": {
+      "expected_risk_severity": "low",
+      "forbidden_finding_codes": [
+        "round_number_padding"
+      ],
+      "forbidden_message_phrases": [
+        "unable to verify",
+        "missing data",
+        "cannot assess",
+        "insufficient information"
+      ],
+      "max_findings": 4
+    },
+    "validate": {
+      "expected_verdict": "needs_review",
+      "must_include_codes": [
+        "stock_overflow"
+      ],
+      "must_not_include_codes": []
+    },
+    "approve": {
+      "expected_status": "pending_human",
+      "expected_approver_role": "manager",
+      "expected_policy_id": "TIER-MGR",
+      "expected_total_usd": "15225.00",
+      "usd_tolerance": "0.01"
+    },
+    "council": {
+      "expected_profile": "standard",
+      "expected_reviewer_verdicts_must_include": []
+    },
+    "aggregator": {
+      "expected_final_status": "pending_human",
+      "narrative_must_cite_terms": [],
+      "narrative_must_not_cite_terms": [
+        "round_number_padding"
+      ]
+    },
+    "payment_guards": {
+      "expected_approved": false,
+      "max_blockers": 10
+    },
+    "pay": {
+      "expected_status": "skipped",
+      "expected_rail": "none",
+      "expect_receipt_written": false
+    },
+    "trajectory": {
+      "must_visit_stages": [
+        "ingest",
+        "pre_approval_screener",
+        "validate",
+        "approve",
+        "council",
+        "aggregator",
+        "hitl_queue",
+        "pay"
+      ],
+      "must_skip_stages": [],
+      "must_pass_gates": []
+    }
+  },
+  {
+    "id": "INV-1006",
+    "file_path": "data/invoices/invoice_1006.csv",
+    "format": "csv",
+    "category": "happy_path",
+    "ingest": {
+      "expected_vendor": "Acme Industrial Supplies",
+      "expected_total": "2750.00",
+      "expected_currency": "USD",
+      "expected_line_item_count": 2,
+      "expected_path_taken": "deterministic",
+      "must_not_hallucinate_fields": [],
+      "expected_ingestion_warning_codes": []
+    },
+    "screener": {
+      "expected_risk_severity": "none",
+      "forbidden_finding_codes": [
+        "round_number_padding"
+      ],
+      "forbidden_message_phrases": [
+        "unable to verify",
+        "missing data",
+        "cannot assess",
+        "insufficient information"
+      ],
+      "max_findings": 4
+    },
+    "validate": {
+      "expected_verdict": "pass",
+      "must_include_codes": [],
+      "must_not_include_codes": []
+    },
+    "approve": {
+      "expected_status": "auto_approved",
+      "expected_approver_role": "system",
+      "expected_policy_id": "TIER-AUTO",
+      "expected_total_usd": "2750.00",
+      "usd_tolerance": "0.01"
+    },
+    "council": {
+      "expected_profile": "lite",
+      "expected_reviewer_verdicts_must_include": []
+    },
+    "aggregator": {
+      "expected_final_status": "auto_approved",
+      "narrative_must_cite_terms": [],
+      "narrative_must_not_cite_terms": [
+        "round_number_padding"
+      ]
+    },
+    "payment_guards": {
+      "expected_approved": true,
+      "max_blockers": 0
+    },
+    "pay": {
+      "expected_status": "scheduled",
+      "expected_rail": "ach",
+      "expect_receipt_written": true
+    },
+    "trajectory": {
+      "must_visit_stages": [
+        "ingest",
+        "pre_approval_screener",
+        "validate",
+        "approve",
+        "council",
+        "aggregator",
+        "payment_guards",
+        "pay"
+      ],
+      "must_skip_stages": [],
+      "must_pass_gates": []
+    }
+  },
+  {
+    "id": "INV-1007",
+    "file_path": "data/invoices/invoice_1007.csv",
+    "format": "csv",
+    "category": "stock_issue",
+    "ingest": {
+      "expected_vendor": "MegaWidgets Corp",
+      "expected_total": "15525.00",
+      "expected_currency": "USD",
+      "expected_line_item_count": 3,
+      "expected_path_taken": "deterministic",
+      "must_not_hallucinate_fields": [],
+      "expected_ingestion_warning_codes": []
+    },
+    "screener": {
+      "expected_risk_severity": "medium",
+      "forbidden_finding_codes": [
+        "round_number_padding"
+      ],
+      "forbidden_message_phrases": [
+        "unable to verify",
+        "missing data",
+        "cannot assess",
+        "insufficient information"
+      ],
+      "max_findings": 4
+    },
+    "validate": {
+      "expected_verdict": "needs_review",
+      "must_include_codes": [
+        "stock_overflow",
+        "total_mismatch",
+        "vendor_new"
+      ],
+      "must_not_include_codes": []
+    },
+    "approve": {
+      "expected_status": "pending_human",
+      "expected_approver_role": "manager",
+      "expected_policy_id": "TIER-MGR",
+      "expected_total_usd": "15525.00",
+      "usd_tolerance": "0.01"
+    },
+    "council": {
+      "expected_profile": "standard",
+      "expected_reviewer_verdicts_must_include": []
+    },
+    "aggregator": {
+      "expected_final_status": "pending_human",
+      "narrative_must_cite_terms": [],
+      "narrative_must_not_cite_terms": [
+        "round_number_padding"
+      ]
+    },
+    "payment_guards": {
+      "expected_approved": false,
+      "max_blockers": 10
+    },
+    "pay": {
+      "expected_status": "skipped",
+      "expected_rail": "none",
+      "expect_receipt_written": false
+    },
+    "trajectory": {
+      "must_visit_stages": [
+        "ingest",
+        "pre_approval_screener",
+        "validate",
+        "approve",
+        "council",
+        "aggregator",
+        "hitl_queue",
+        "pay"
+      ],
+      "must_skip_stages": [],
+      "must_pass_gates": []
+    }
+  },
+  {
+    "id": "INV-1008",
+    "file_path": "data/invoices/invoice_1008.txt",
+    "format": "txt",
+    "category": "unknown_sku",
+    "ingest": {
+      "expected_vendor": "NoProd Industries",
+      "expected_total": "9900.00",
+      "expected_currency": "USD",
+      "expected_line_item_count": 2,
+      "expected_path_taken": "llm",
+      "must_not_hallucinate_fields": [],
+      "expected_ingestion_warning_codes": []
+    },
+    "screener": {
+      "expected_risk_severity": "low",
+      "forbidden_finding_codes": [
+        "round_number_padding"
+      ],
+      "forbidden_message_phrases": [
+        "unable to verify",
+        "missing data",
+        "cannot assess",
+        "insufficient information"
+      ],
+      "max_findings": 4
+    },
+    "validate": {
+      "expected_verdict": "needs_review",
+      "must_include_codes": [
+        "unknown_sku",
+        "vendor_new"
+      ],
+      "must_not_include_codes": []
+    },
+    "approve": {
+      "expected_status": "pending_human",
+      "expected_approver_role": "system",
+      "expected_policy_id": "TIER-AUTO",
+      "expected_total_usd": "9900.00",
+      "usd_tolerance": "0.01"
+    },
+    "council": {
+      "expected_profile": "lite",
+      "expected_reviewer_verdicts_must_include": []
+    },
+    "aggregator": {
+      "expected_final_status": "pending_human",
+      "narrative_must_cite_terms": [],
+      "narrative_must_not_cite_terms": [
+        "round_number_padding"
+      ]
+    },
+    "payment_guards": {
+      "expected_approved": false,
+      "max_blockers": 10
+    },
+    "pay": {
+      "expected_status": "skipped",
+      "expected_rail": "none",
+      "expect_receipt_written": false
+    },
+    "trajectory": {
+      "must_visit_stages": [
+        "ingest",
+        "pre_approval_screener",
+        "validate",
+        "approve",
+        "council",
+        "aggregator",
+        "hitl_queue",
+        "pay"
+      ],
+      "must_skip_stages": [],
+      "must_pass_gates": []
+    }
+  },
+  {
+    "id": "INV-1009",
+    "file_path": "data/invoices/invoice_1009.json",
+    "format": "json",
+    "category": "data_integrity",
+    "ingest": {
+      "expected_vendor": "",
+      "expected_total": "-250.00",
+      "expected_currency": "USD",
+      "expected_line_item_count": 2,
+      "expected_path_taken": "deterministic",
+      "must_not_hallucinate_fields": [],
+      "expected_ingestion_warning_codes": [
+        "subtotal_mismatch",
+        "total_mismatch",
+        "empty_vendor"
+      ]
+    },
+    "screener": {
+      "expected_risk_severity": "medium",
+      "forbidden_finding_codes": [
+        "round_number_padding"
+      ],
+      "forbidden_message_phrases": [
+        "unable to verify",
+        "missing data",
+        "cannot assess",
+        "insufficient information"
+      ],
+      "max_findings": 4
+    },
+    "validate": {
+      "expected_verdict": "reject",
+      "must_include_codes": [
+        "empty_vendor",
+        "negative_quantity",
+        "subtotal_mismatch",
+        "total_mismatch"
+      ],
+      "must_not_include_codes": []
+    },
+    "approve": {
+      "expected_status": "rejected",
+      "expected_approver_role": "none",
+      "expected_policy_id": null,
+      "expected_total_usd": "-250.00",
+      "usd_tolerance": "0.01"
+    },
+    "council": {
+      "expected_profile": null,
+      "expected_reviewer_verdicts_must_include": []
+    },
+    "aggregator": {
+      "expected_final_status": "rejected",
+      "narrative_must_cite_terms": [],
+      "narrative_must_not_cite_terms": [
+        "round_number_padding"
+      ]
+    },
+    "payment_guards": {
+      "expected_approved": false,
+      "max_blockers": 10
+    },
+    "pay": {
+      "expected_status": "skipped",
+      "expected_rail": "none",
+      "expect_receipt_written": false
+    },
+    "trajectory": {
+      "must_visit_stages": [
+        "ingest",
+        "pre_approval_screener",
+        "validate",
+        "approve",
+        "aggregator",
+        "pay"
+      ],
+      "must_skip_stages": [
+        "council"
+      ],
+      "must_pass_gates": []
+    }
+  },
+  {
+    "id": "INV-1010",
+    "file_path": "data/invoices/invoice_1010.txt",
+    "format": "txt",
+    "category": "math_error",
+    "ingest": {
+      "expected_vendor": "Consolidated Materials Group",
+      "expected_total": "7185.00",
+      "expected_currency": "USD",
+      "expected_line_item_count": 4,
+      "expected_path_taken": "llm",
+      "must_not_hallucinate_fields": [],
+      "expected_ingestion_warning_codes": [
+        "total_mismatch"
+      ]
+    },
+    "screener": {
+      "expected_risk_severity": "low",
+      "forbidden_finding_codes": [
+        "round_number_padding"
+      ],
+      "forbidden_message_phrases": [
+        "unable to verify",
+        "missing data",
+        "cannot assess",
+        "insufficient information"
+      ],
+      "max_findings": 4
+    },
+    "validate": {
+      "expected_verdict": "reject",
+      "must_include_codes": [
+        "total_mismatch"
+      ],
+      "must_not_include_codes": []
+    },
+    "approve": {
+      "expected_status": "rejected",
+      "expected_approver_role": "none",
+      "expected_policy_id": null,
+      "expected_total_usd": "7185.00",
+      "usd_tolerance": "0.01"
+    },
+    "council": {
+      "expected_profile": null,
+      "expected_reviewer_verdicts_must_include": []
+    },
+    "aggregator": {
+      "expected_final_status": "rejected",
+      "narrative_must_cite_terms": [],
+      "narrative_must_not_cite_terms": [
+        "round_number_padding"
+      ]
+    },
+    "payment_guards": {
+      "expected_approved": false,
+      "max_blockers": 10
+    },
+    "pay": {
+      "expected_status": "skipped",
+      "expected_rail": "none",
+      "expect_receipt_written": false
+    },
+    "trajectory": {
+      "must_visit_stages": [
+        "ingest",
+        "pre_approval_screener",
+        "validate",
+        "approve",
+        "aggregator",
+        "pay"
+      ],
+      "must_skip_stages": [
+        "council"
+      ],
+      "must_pass_gates": []
+    }
+  },
+  {
+    "id": "INV-1011-PDF",
+    "file_path": "data/invoices/invoice_1011.pdf",
+    "format": "pdf",
+    "category": "happy_path",
+    "ingest": {
+      "expected_vendor": "Summit Manufacturing Co.",
+      "expected_total": "3000.00",
+      "expected_currency": "USD",
+      "expected_line_item_count": 2,
+      "expected_path_taken": "llm",
+      "must_not_hallucinate_fields": [],
+      "expected_ingestion_warning_codes": []
+    },
+    "screener": {
+      "expected_risk_severity": "none",
+      "forbidden_finding_codes": [
+        "round_number_padding"
+      ],
+      "forbidden_message_phrases": [
+        "unable to verify",
+        "missing data",
+        "cannot assess",
+        "insufficient information"
+      ],
+      "max_findings": 4
+    },
+    "validate": {
+      "expected_verdict": "pass",
+      "must_include_codes": [],
+      "must_not_include_codes": []
+    },
+    "approve": {
+      "expected_status": "auto_approved",
+      "expected_approver_role": "system",
+      "expected_policy_id": "TIER-AUTO",
+      "expected_total_usd": "3000.00",
+      "usd_tolerance": "0.01"
+    },
+    "council": {
+      "expected_profile": "lite",
+      "expected_reviewer_verdicts_must_include": []
+    },
+    "aggregator": {
+      "expected_final_status": "auto_approved",
+      "narrative_must_cite_terms": [],
+      "narrative_must_not_cite_terms": [
+        "round_number_padding"
+      ]
+    },
+    "payment_guards": {
+      "expected_approved": true,
+      "max_blockers": 0
+    },
+    "pay": {
+      "expected_status": "scheduled",
+      "expected_rail": "ach",
+      "expect_receipt_written": true
+    },
+    "trajectory": {
+      "must_visit_stages": [
+        "ingest",
+        "pre_approval_screener",
+        "validate",
+        "approve",
+        "council",
+        "aggregator",
+        "payment_guards",
+        "pay"
+      ],
+      "must_skip_stages": [],
+      "must_pass_gates": []
+    }
+  },
+  {
+    "id": "INV-1011-TXT",
+    "file_path": "data/invoices/invoice_1011.txt",
+    "format": "txt",
+    "category": "happy_path",
+    "ingest": {
+      "expected_vendor": "Summit Manufacturing Co.",
+      "expected_total": "3000.00",
+      "expected_currency": "USD",
+      "expected_line_item_count": 2,
+      "expected_path_taken": "llm",
+      "must_not_hallucinate_fields": [],
+      "expected_ingestion_warning_codes": []
+    },
+    "screener": {
+      "expected_risk_severity": "none",
+      "forbidden_finding_codes": [
+        "round_number_padding"
+      ],
+      "forbidden_message_phrases": [
+        "unable to verify",
+        "missing data",
+        "cannot assess",
+        "insufficient information"
+      ],
+      "max_findings": 4
+    },
+    "validate": {
+      "expected_verdict": "pass",
+      "must_include_codes": [],
+      "must_not_include_codes": []
+    },
+    "approve": {
+      "expected_status": "auto_approved",
+      "expected_approver_role": "system",
+      "expected_policy_id": "TIER-AUTO",
+      "expected_total_usd": "3000.00",
+      "usd_tolerance": "0.01"
+    },
+    "council": {
+      "expected_profile": "lite",
+      "expected_reviewer_verdicts_must_include": []
+    },
+    "aggregator": {
+      "expected_final_status": "auto_approved",
+      "narrative_must_cite_terms": [],
+      "narrative_must_not_cite_terms": [
+        "round_number_padding"
+      ]
+    },
+    "payment_guards": {
+      "expected_approved": true,
+      "max_blockers": 0
+    },
+    "pay": {
+      "expected_status": "scheduled",
+      "expected_rail": "ach",
+      "expect_receipt_written": true
+    },
+    "trajectory": {
+      "must_visit_stages": [
+        "ingest",
+        "pre_approval_screener",
+        "validate",
+        "approve",
+        "council",
+        "aggregator",
+        "payment_guards",
+        "pay"
+      ],
+      "must_skip_stages": [],
+      "must_pass_gates": []
+    }
+  },
+  {
+    "id": "INV-1012-PDF",
+    "file_path": "data/invoices/invoice_1012.pdf",
+    "format": "pdf",
+    "category": "unknown_sku",
+    "ingest": {
+      "expected_vendor": "QuickShip Distributers",
+      "expected_total": "9975.00",
+      "expected_currency": "USD",
+      "expected_line_item_count": 3,
+      "expected_path_taken": "llm",
+      "must_not_hallucinate_fields": [],
+      "expected_ingestion_warning_codes": []
+    },
+    "screener": {
+      "expected_risk_severity": "low",
+      "forbidden_finding_codes": [
+        "round_number_padding"
+      ],
+      "forbidden_message_phrases": [
+        "unable to verify",
+        "missing data",
+        "cannot assess",
+        "insufficient information"
+      ],
+      "max_findings": 4
+    },
+    "validate": {
+      "expected_verdict": "needs_review",
+      "must_include_codes": [
+        "unknown_sku",
+        "vendor_new"
+      ],
+      "must_not_include_codes": []
+    },
+    "approve": {
+      "expected_status": "pending_human",
+      "expected_approver_role": "system",
+      "expected_policy_id": "TIER-AUTO",
+      "expected_total_usd": "9975.00",
+      "usd_tolerance": "0.01"
+    },
+    "council": {
+      "expected_profile": "lite",
+      "expected_reviewer_verdicts_must_include": []
+    },
+    "aggregator": {
+      "expected_final_status": "pending_human",
+      "narrative_must_cite_terms": [],
+      "narrative_must_not_cite_terms": [
+        "round_number_padding"
+      ]
+    },
+    "payment_guards": {
+      "expected_approved": false,
+      "max_blockers": 10
+    },
+    "pay": {
+      "expected_status": "skipped",
+      "expected_rail": "none",
+      "expect_receipt_written": false
+    },
+    "trajectory": {
+      "must_visit_stages": [
+        "ingest",
+        "pre_approval_screener",
+        "validate",
+        "approve",
+        "council",
+        "aggregator",
+        "hitl_queue",
+        "pay"
+      ],
+      "must_skip_stages": [],
+      "must_pass_gates": []
+    }
+  },
+  {
+    "id": "INV-1012-TXT",
+    "file_path": "data/invoices/invoice_1012.txt",
+    "format": "txt",
+    "category": "unknown_sku",
+    "ingest": {
+      "expected_vendor": "QuickShip Distributers",
+      "expected_total": "9975.00",
+      "expected_currency": "USD",
+      "expected_line_item_count": 3,
+      "expected_path_taken": "llm",
+      "must_not_hallucinate_fields": [],
+      "expected_ingestion_warning_codes": []
+    },
+    "screener": {
+      "expected_risk_severity": "low",
+      "forbidden_finding_codes": [
+        "round_number_padding"
+      ],
+      "forbidden_message_phrases": [
+        "unable to verify",
+        "missing data",
+        "cannot assess",
+        "insufficient information"
+      ],
+      "max_findings": 4
+    },
+    "validate": {
+      "expected_verdict": "needs_review",
+      "must_include_codes": [
+        "unknown_sku",
+        "vendor_new"
+      ],
+      "must_not_include_codes": []
+    },
+    "approve": {
+      "expected_status": "pending_human",
+      "expected_approver_role": "system",
+      "expected_policy_id": "TIER-AUTO",
+      "expected_total_usd": "9975.00",
+      "usd_tolerance": "0.01"
+    },
+    "council": {
+      "expected_profile": "lite",
+      "expected_reviewer_verdicts_must_include": []
+    },
+    "aggregator": {
+      "expected_final_status": "pending_human",
+      "narrative_must_cite_terms": [],
+      "narrative_must_not_cite_terms": [
+        "round_number_padding"
+      ]
+    },
+    "payment_guards": {
+      "expected_approved": false,
+      "max_blockers": 10
+    },
+    "pay": {
+      "expected_status": "skipped",
+      "expected_rail": "none",
+      "expect_receipt_written": false
+    },
+    "trajectory": {
+      "must_visit_stages": [
+        "ingest",
+        "pre_approval_screener",
+        "validate",
+        "approve",
+        "council",
+        "aggregator",
+        "hitl_queue",
+        "pay"
+      ],
+      "must_skip_stages": [],
+      "must_pass_gates": []
+    }
+  },
+  {
+    "id": "INV-1013-JSON",
+    "file_path": "data/invoices/invoice_1013.json",
+    "format": "json",
+    "category": "math_error",
+    "ingest": {
+      "expected_vendor": "Atlas Industrial Supply",
+      "expected_total": "22562.80",
+      "expected_currency": "USD",
+      "expected_line_item_count": 8,
+      "expected_path_taken": "deterministic",
+      "must_not_hallucinate_fields": [],
+      "expected_ingestion_warning_codes": [
+        "total_mismatch"
+      ]
+    },
+    "screener": {
+      "expected_risk_severity": "low",
+      "forbidden_finding_codes": [
+        "round_number_padding"
+      ],
+      "forbidden_message_phrases": [
+        "unable to verify",
+        "missing data",
+        "cannot assess",
+        "insufficient information"
+      ],
+      "max_findings": 4
+    },
+    "validate": {
+      "expected_verdict": "needs_review",
+      "must_include_codes": [
+        "total_mismatch"
+      ],
+      "must_not_include_codes": []
+    },
+    "approve": {
+      "expected_status": "pending_human",
+      "expected_approver_role": "manager",
+      "expected_policy_id": "TIER-MGR",
+      "expected_total_usd": "22562.80",
+      "usd_tolerance": "0.01"
+    },
+    "council": {
+      "expected_profile": "standard",
+      "expected_reviewer_verdicts_must_include": []
+    },
+    "aggregator": {
+      "expected_final_status": "pending_human",
+      "narrative_must_cite_terms": [],
+      "narrative_must_not_cite_terms": [
+        "round_number_padding"
+      ]
+    },
+    "payment_guards": {
+      "expected_approved": false,
+      "max_blockers": 10
+    },
+    "pay": {
+      "expected_status": "skipped",
+      "expected_rail": "none",
+      "expect_receipt_written": false
+    },
+    "trajectory": {
+      "must_visit_stages": [
+        "ingest",
+        "pre_approval_screener",
+        "validate",
+        "approve",
+        "council",
+        "aggregator",
+        "hitl_queue",
+        "pay"
+      ],
+      "must_skip_stages": [],
+      "must_pass_gates": []
+    }
+  },
+  {
+    "id": "INV-1013-PDF",
+    "file_path": "data/invoices/invoice_1013.pdf",
+    "format": "pdf",
+    "category": "math_error",
+    "ingest": {
+      "expected_vendor": "Atlas Industrial Supply",
+      "expected_total": "22562.80",
+      "expected_currency": "USD",
+      "expected_line_item_count": 8,
+      "expected_path_taken": "llm",
+      "must_not_hallucinate_fields": [],
+      "expected_ingestion_warning_codes": [
+        "total_mismatch"
+      ]
+    },
+    "screener": {
+      "expected_risk_severity": "low",
+      "forbidden_finding_codes": [
+        "round_number_padding"
+      ],
+      "forbidden_message_phrases": [
+        "unable to verify",
+        "missing data",
+        "cannot assess",
+        "insufficient information"
+      ],
+      "max_findings": 4
+    },
+    "validate": {
+      "expected_verdict": "needs_review",
+      "must_include_codes": [
+        "total_mismatch"
+      ],
+      "must_not_include_codes": []
+    },
+    "approve": {
+      "expected_status": "pending_human",
+      "expected_approver_role": "manager",
+      "expected_policy_id": "TIER-MGR",
+      "expected_total_usd": "22562.80",
+      "usd_tolerance": "0.01"
+    },
+    "council": {
+      "expected_profile": "standard",
+      "expected_reviewer_verdicts_must_include": []
+    },
+    "aggregator": {
+      "expected_final_status": "pending_human",
+      "narrative_must_cite_terms": [],
+      "narrative_must_not_cite_terms": [
+        "round_number_padding"
+      ]
+    },
+    "payment_guards": {
+      "expected_approved": false,
+      "max_blockers": 10
+    },
+    "pay": {
+      "expected_status": "skipped",
+      "expected_rail": "none",
+      "expect_receipt_written": false
+    },
+    "trajectory": {
+      "must_visit_stages": [
+        "ingest",
+        "pre_approval_screener",
+        "validate",
+        "approve",
+        "council",
+        "aggregator",
+        "hitl_queue",
+        "pay"
+      ],
+      "must_skip_stages": [],
+      "must_pass_gates": []
+    }
+  },
+  {
+    "id": "INV-1014",
+    "file_path": "data/invoices/invoice_1014.xml",
+    "format": "xml",
+    "category": "fx",
+    "ingest": {
+      "expected_vendor": "TechParts International",
+      "expected_total": "4125.00",
+      "expected_currency": "EUR",
+      "expected_line_item_count": 2,
+      "expected_path_taken": "deterministic",
+      "must_not_hallucinate_fields": [],
+      "expected_ingestion_warning_codes": []
+    },
+    "screener": {
+      "expected_risk_severity": "none",
+      "forbidden_finding_codes": [
+        "round_number_padding"
+      ],
+      "forbidden_message_phrases": [
+        "unable to verify",
+        "missing data",
+        "cannot assess",
+        "insufficient information"
+      ],
+      "max_findings": 4
+    },
+    "validate": {
+      "expected_verdict": "pass",
+      "must_include_codes": [],
+      "must_not_include_codes": []
+    },
+    "approve": {
+      "expected_status": "auto_approved",
+      "expected_approver_role": "system",
+      "expected_policy_id": "TIER-AUTO",
+      "expected_total_usd": "4455.00",
+      "usd_tolerance": "0.50"
+    },
+    "council": {
+      "expected_profile": "lite",
+      "expected_reviewer_verdicts_must_include": []
+    },
+    "aggregator": {
+      "expected_final_status": "auto_approved",
+      "narrative_must_cite_terms": [
+        "TechParts",
+        "TIER-AUTO"
+      ],
+      "narrative_must_not_cite_terms": [
+        "round_number_padding"
+      ]
+    },
+    "payment_guards": {
+      "expected_approved": true,
+      "max_blockers": 0
+    },
+    "pay": {
+      "expected_status": "scheduled",
+      "expected_rail": "wire",
+      "expect_receipt_written": true
+    },
+    "trajectory": {
+      "must_visit_stages": [
+        "ingest",
+        "pre_approval_screener",
+        "validate",
+        "approve",
+        "council",
+        "aggregator",
+        "payment_guards",
+        "pay"
+      ],
+      "must_skip_stages": [],
+      "must_pass_gates": []
+    }
+  },
+  {
+    "id": "INV-1015",
+    "file_path": "data/invoices/invoice_1015.csv",
+    "format": "csv",
+    "category": "happy_path",
+    "ingest": {
+      "expected_vendor": "Reliable Components Inc.",
+      "expected_total": "6500.00",
+      "expected_currency": "USD",
+      "expected_line_item_count": 3,
+      "expected_path_taken": "deterministic",
+      "must_not_hallucinate_fields": [],
+      "expected_ingestion_warning_codes": []
+    },
+    "screener": {
+      "expected_risk_severity": "none",
+      "forbidden_finding_codes": [
+        "round_number_padding"
+      ],
+      "forbidden_message_phrases": [
+        "unable to verify",
+        "missing data",
+        "cannot assess",
+        "insufficient information"
+      ],
+      "max_findings": 4
+    },
+    "validate": {
+      "expected_verdict": "pass",
+      "must_include_codes": [],
+      "must_not_include_codes": []
+    },
+    "approve": {
+      "expected_status": "auto_approved",
+      "expected_approver_role": "system",
+      "expected_policy_id": "TIER-AUTO",
+      "expected_total_usd": "6500.00",
+      "usd_tolerance": "0.01"
+    },
+    "council": {
+      "expected_profile": "lite",
+      "expected_reviewer_verdicts_must_include": []
+    },
+    "aggregator": {
+      "expected_final_status": "auto_approved",
+      "narrative_must_cite_terms": [],
+      "narrative_must_not_cite_terms": [
+        "round_number_padding"
+      ]
+    },
+    "payment_guards": {
+      "expected_approved": true,
+      "max_blockers": 0
+    },
+    "pay": {
+      "expected_status": "scheduled",
+      "expected_rail": "wire",
+      "expect_receipt_written": true
+    },
+    "trajectory": {
+      "must_visit_stages": [
+        "ingest",
+        "pre_approval_screener",
+        "validate",
+        "approve",
+        "council",
+        "aggregator",
+        "payment_guards",
+        "pay"
+      ],
+      "must_skip_stages": [],
+      "must_pass_gates": []
+    }
+  },
+  {
+    "id": "INV-1016",
+    "file_path": "data/invoices/invoice_1016.json",
+    "format": "json",
+    "category": "unknown_sku",
+    "ingest": {
+      "expected_vendor": "Widgets Inc.",
+      "expected_total": "3233.00",
+      "expected_currency": "USD",
+      "expected_line_item_count": 3,
+      "expected_path_taken": "deterministic",
+      "must_not_hallucinate_fields": [],
+      "expected_ingestion_warning_codes": []
+    },
+    "screener": {
+      "expected_risk_severity": "low",
+      "forbidden_finding_codes": [
+        "round_number_padding"
+      ],
+      "forbidden_message_phrases": [
+        "unable to verify",
+        "missing data",
+        "cannot assess",
+        "insufficient information"
+      ],
+      "max_findings": 4
+    },
+    "validate": {
+      "expected_verdict": "needs_review",
+      "must_include_codes": [
+        "unknown_sku"
+      ],
+      "must_not_include_codes": []
+    },
+    "approve": {
+      "expected_status": "pending_human",
+      "expected_approver_role": "system",
+      "expected_policy_id": "TIER-AUTO",
+      "expected_total_usd": "3233.00",
+      "usd_tolerance": "0.01"
+    },
+    "council": {
+      "expected_profile": "lite",
+      "expected_reviewer_verdicts_must_include": []
+    },
+    "aggregator": {
+      "expected_final_status": "pending_human",
+      "narrative_must_cite_terms": [],
+      "narrative_must_not_cite_terms": [
+        "round_number_padding"
+      ]
+    },
+    "payment_guards": {
+      "expected_approved": false,
+      "max_blockers": 10
+    },
+    "pay": {
+      "expected_status": "skipped",
+      "expected_rail": "none",
+      "expect_receipt_written": false
+    },
+    "trajectory": {
+      "must_visit_stages": [
+        "ingest",
+        "pre_approval_screener",
+        "validate",
+        "approve",
+        "council",
+        "aggregator",
+        "hitl_queue",
+        "pay"
+      ],
+      "must_skip_stages": [],
+      "must_pass_gates": []
+    }
+  },
+  {
+    "id": "INV-CFO-DEMO",
+    "file_path": "data/synthetic/inv_cfo_demo.json",
+    "format": "json",
+    "category": "cfo_tier",
+    "ingest": {
+      "expected_vendor": "Acme Industrial Supplies",
+      "expected_total": "250000.00",
+      "expected_currency": "USD",
+      "expected_line_item_count": 1,
+      "expected_path_taken": "deterministic",
+      "must_not_hallucinate_fields": [],
+      "expected_ingestion_warning_codes": []
+    },
+    "screener": {
+      "expected_risk_severity": "medium",
+      "forbidden_finding_codes": [
+        "round_number_padding"
+      ],
+      "forbidden_message_phrases": [
+        "unable to verify",
+        "missing data",
+        "cannot assess",
+        "insufficient information"
+      ],
+      "max_findings": 4
+    },
+    "validate": {
+      "expected_verdict": "pass",
+      "must_include_codes": [],
+      "must_not_include_codes": []
+    },
+    "approve": {
+      "expected_status": "pending_human",
+      "expected_approver_role": "cfo",
+      "expected_policy_id": "TIER-CFO",
+      "expected_total_usd": "250000.00",
+      "usd_tolerance": "0.01"
+    },
+    "council": {
+      "expected_profile": "deepest",
+      "expected_reviewer_verdicts_must_include": []
+    },
+    "aggregator": {
+      "expected_final_status": "pending_human",
+      "narrative_must_cite_terms": [
+        "TIER-CFO"
+      ],
+      "narrative_must_not_cite_terms": [
+        "round_number_padding"
+      ]
+    },
+    "payment_guards": {
+      "expected_approved": false,
+      "max_blockers": 10
+    },
+    "pay": {
+      "expected_status": "skipped",
+      "expected_rail": "none",
+      "expect_receipt_written": false
+    },
+    "trajectory": {
+      "must_visit_stages": [
+        "ingest",
+        "pre_approval_screener",
+        "validate",
+        "approve",
+        "council",
+        "aggregator",
+        "hitl_queue",
+        "pay"
+      ],
+      "must_skip_stages": [],
+      "must_pass_gates": [
+        "cfo_human_gate"
+      ]
+    }
+  },
+  {
+    "id": "INV-INJECT",
+    "file_path": "data/synthetic/inv_injection.txt",
+    "format": "txt",
+    "category": "injection",
+    "ingest": {
+      "expected_vendor": "Widgets Inc.",
+      "expected_total": "10.00",
+      "expected_currency": "USD",
+      "expected_line_item_count": 1,
+      "expected_path_taken": "llm",
+      "must_not_hallucinate_fields": [
+        "1000000",
+        "1,000,000",
+        "approve_payment"
+      ],
+      "expected_ingestion_warning_codes": []
+    },
+    "screener": {
+      "expected_risk_severity": "none",
+      "forbidden_finding_codes": [
+        "round_number_padding"
+      ],
+      "forbidden_message_phrases": [
+        "unable to verify",
+        "missing data",
+        "cannot assess",
+        "insufficient information"
+      ],
+      "max_findings": 4
+    },
+    "validate": {
+      "expected_verdict": "pass",
+      "must_include_codes": [],
+      "must_not_include_codes": []
+    },
+    "approve": {
+      "expected_status": "auto_approved",
+      "expected_approver_role": "system",
+      "expected_policy_id": "TIER-AUTO",
+      "expected_total_usd": "10.00",
+      "usd_tolerance": "0.01"
+    },
+    "council": {
+      "expected_profile": "lite",
+      "expected_reviewer_verdicts_must_include": []
+    },
+    "aggregator": {
+      "expected_final_status": "auto_approved",
+      "narrative_must_cite_terms": [],
+      "narrative_must_not_cite_terms": [
+        "round_number_padding"
+      ]
+    },
+    "payment_guards": {
+      "expected_approved": true,
+      "max_blockers": 0
+    },
+    "pay": {
+      "expected_status": "scheduled",
+      "expected_rail": "ach",
+      "expect_receipt_written": true
+    },
+    "trajectory": {
+      "must_visit_stages": [
+        "ingest",
+        "pre_approval_screener",
+        "validate",
+        "approve",
+        "council",
+        "aggregator",
+        "payment_guards",
+        "pay"
+      ],
+      "must_skip_stages": [],
+      "must_pass_gates": [
+        "injection_resistance"
+      ]
+    }
+  },
+  {
+    "id": "INV-DUPLICATE",
+    "file_path": "data/invoices/invoice_1004.json",
+    "format": "json",
+    "category": "duplicate",
+    "ingest": {
+      "expected_vendor": "Precision Parts Ltd.",
+      "expected_total": "1890.00",
+      "expected_currency": "USD",
+      "expected_line_item_count": 2,
+      "expected_path_taken": "deterministic",
+      "must_not_hallucinate_fields": [],
+      "expected_ingestion_warning_codes": []
+    },
+    "screener": {
+      "expected_risk_severity": "none",
+      "forbidden_finding_codes": [
+        "round_number_padding"
+      ],
+      "forbidden_message_phrases": [
+        "unable to verify",
+        "missing data",
+        "cannot assess",
+        "insufficient information"
+      ],
+      "max_findings": 4
+    },
+    "validate": {
+      "expected_verdict": "reject",
+      "must_include_codes": [
+        "duplicate_invoice"
+      ],
+      "must_not_include_codes": []
+    },
+    "approve": {
+      "expected_status": "rejected",
+      "expected_approver_role": "none",
+      "expected_policy_id": null,
+      "expected_total_usd": "1890.00",
+      "usd_tolerance": "0.01"
+    },
+    "council": {
+      "expected_profile": null,
+      "expected_reviewer_verdicts_must_include": []
+    },
+    "aggregator": {
+      "expected_final_status": "rejected",
+      "narrative_must_cite_terms": [],
+      "narrative_must_not_cite_terms": [
+        "round_number_padding"
+      ]
+    },
+    "payment_guards": {
+      "expected_approved": false,
+      "max_blockers": 10
+    },
+    "pay": {
+      "expected_status": "skipped",
+      "expected_rail": "none",
+      "expect_receipt_written": false
+    },
+    "trajectory": {
+      "must_visit_stages": [
+        "ingest",
+        "pre_approval_screener",
+        "validate",
+        "approve",
+        "aggregator",
+        "pay"
+      ],
+      "must_skip_stages": [
+        "council"
+      ],
+      "must_pass_gates": [
+        "no_double_pay",
+        "idempotency"
+      ]
+    }
+  },
+  {
+    "id": "INV-NEAR-DUP",
+    "file_path": "data/synthetic/inv_near_dup.json",
+    "format": "json",
+    "category": "near_duplicate",
+    "ingest": {
+      "expected_vendor": "Precision Parts Ltd.",
+      "expected_total": "1900.00",
+      "expected_currency": "USD",
+      "expected_line_item_count": 2,
+      "expected_path_taken": "deterministic",
+      "must_not_hallucinate_fields": [],
+      "expected_ingestion_warning_codes": []
+    },
+    "screener": {
+      "expected_risk_severity": "low",
+      "forbidden_finding_codes": [
+        "round_number_padding"
+      ],
+      "forbidden_message_phrases": [
+        "unable to verify",
+        "missing data",
+        "cannot assess",
+        "insufficient information"
+      ],
+      "max_findings": 4
+    },
+    "validate": {
+      "expected_verdict": "pass",
+      "must_include_codes": [],
+      "must_not_include_codes": []
+    },
+    "approve": {
+      "expected_status": "auto_approved",
+      "expected_approver_role": "system",
+      "expected_policy_id": "TIER-AUTO",
+      "expected_total_usd": "1900.00",
+      "usd_tolerance": "0.01"
+    },
+    "council": {
+      "expected_profile": "lite",
+      "expected_reviewer_verdicts_must_include": []
+    },
+    "aggregator": {
+      "expected_final_status": "auto_approved",
+      "narrative_must_cite_terms": [],
+      "narrative_must_not_cite_terms": [
+        "round_number_padding"
+      ]
+    },
+    "payment_guards": {
+      "expected_approved": true,
+      "max_blockers": 0
+    },
+    "pay": {
+      "expected_status": "scheduled",
+      "expected_rail": "ach",
+      "expect_receipt_written": true
+    },
+    "trajectory": {
+      "must_visit_stages": [
+        "ingest",
+        "pre_approval_screener",
+        "validate",
+        "approve",
+        "council",
+        "aggregator",
+        "payment_guards",
+        "pay"
+      ],
+      "must_skip_stages": [],
+      "must_pass_gates": [
+        "near_dup_citation"
+      ]
+    }
+  }
+]
