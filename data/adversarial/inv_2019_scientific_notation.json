@@ -1,0 +1,18 @@
+{
+  "invoice_number": "INV-2019",
+  "vendor": "Atlas Industrial Supply",
+  "date": "2026-02-19",
+  "due_date": "2026-03-19",
+  "currency": "USD",
+  "line_items": [
+    {
+      "item": "WidgetA",
+      "quantity": 60,
+      "unit_price": 250.0
+    }
+  ],
+  "subtotal": 15000.0,
+  "tax_amount": 0,
+  "total": 15000.0,
+  "payment_terms": "Net 30"
+}

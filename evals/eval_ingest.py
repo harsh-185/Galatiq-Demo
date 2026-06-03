@@ -29,6 +29,7 @@ from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv(REPO_ROOT / ".env")
 
+from evals.braintrust_upload import upload  # noqa: E402
 from evals.loader import GoldenTrajectory, load_goldens  # noqa: E402
 from evals.scorers.code_scorers import (  # noqa: E402
     hallucination_check,
@@ -117,38 +118,9 @@ def main() -> int:
     print(f"\n{passed}/{len(rows)} passed (threshold={args.threshold})")
 
     if args.braintrust:
-        _upload_to_braintrust("ingest", args.variant, rows, goldens)
+        upload("ingest", args.variant, rows, goldens)
 
     return 0 if passed == len(rows) else 1
-
-
-def _upload_to_braintrust(eval_name, variant, rows, goldens) -> None:
-    """Upload results as a Braintrust experiment under project 'galatiq'."""
-    if not os.environ.get("BRAINTRUST_API_KEY"):
-        print("(skipping braintrust upload: BRAINTRUST_API_KEY not set)")
-        return
-    try:
-        from braintrust import init
-    except ImportError:
-        print("(skipping braintrust upload: braintrust package not installed)")
-        return
-    experiment = init(project="galatiq", experiment=f"{eval_name}_{variant}")
-    by_id = {g.id: g for g in goldens}
-    for row in rows:
-        g = by_id[row["id"]]
-        experiment.log(
-            input={"id": g.id, "file_path": g.file_path, "category": g.category},
-            output=row.get("scores"),
-            expected={"ingest": json.loads(json.dumps(g.ingest, default=str))},
-            scores={k: v["score"] for k, v in row.get("scores", {}).items()},
-            metadata={
-                "variant": variant,
-                "ok": row.get("ok", False),
-                "error": row.get("error"),
-            },
-        )
-    experiment.flush()
-    print(f"Uploaded {len(rows)} rows to Braintrust experiment '{eval_name}_{variant}'")
 
 
 if __name__ == "__main__":

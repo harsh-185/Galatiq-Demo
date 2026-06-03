@@ -54,6 +54,9 @@ jobs:
           python -m evals.eval_trajectory \
             --variant deterministic_baseline \
             --only INV-1004,INV-1005,INV-1014,INV-CFO-DEMO,INV-DUPLICATE
+      - name: Adversarial eval (xfail-aware; fails only on undocumented regressions)
+        run: |
+          python -m evals.eval_adversarial --variant deterministic_baseline
 
   # Nightly: full corpus, all variants, LLM judges on. Uploads to Braintrust.
   nightly-full:

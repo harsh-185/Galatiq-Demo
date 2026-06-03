@@ -1,0 +1,18 @@
+{
+  "invoice_number": "INV-2006",
+  "vendor": "Widgets Inc.",
+  "date": "2026-02-06",
+  "due_date": "2026-03-06",
+  "currency": "USD",
+  "line_items": [
+    {
+      "item": "WidgetA",
+      "quantity": 1,
+      "unit_price": 999999.0
+    }
+  ],
+  "subtotal": 999999.0,
+  "tax_amount": 0.0,
+  "total": 999999.0,
+  "payment_terms": "Net 30"
+}

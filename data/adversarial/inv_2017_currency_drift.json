@@ -1,0 +1,18 @@
+{
+  "invoice_number": "INV-2017",
+  "vendor": "TechParts International",
+  "date": "2026-02-17",
+  "due_date": "2026-03-17",
+  "currency": "USD",
+  "line_items": [
+    {
+      "item": "WidgetA",
+      "quantity": 4,
+      "unit_price": 250.0
+    }
+  ],
+  "subtotal": 1000.0,
+  "tax_amount": 0.0,
+  "total": 1000.0,
+  "payment_terms": "Net 30"
+}

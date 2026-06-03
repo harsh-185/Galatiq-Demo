@@ -24,6 +24,7 @@ from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv(REPO_ROOT / ".env")
 
+from evals.braintrust_upload import upload  # noqa: E402
 from evals.loader import GoldenTrajectory, load_goldens  # noqa: E402
 from evals.scorers.code_scorers import (  # noqa: E402
     finding_codes_match,
@@ -80,6 +81,7 @@ def main() -> int:
     parser.add_argument("--db-path", default="evals.inventory.db",
                         help="Fresh DB created per run for dedup isolation")
     parser.add_argument("--threshold", type=float, default=0.99)
+    parser.add_argument("--braintrust", action="store_true")
     args = parser.parse_args()
 
     only_ids = [s.strip() for s in args.only.split(",") if s.strip()] or None
@@ -124,6 +126,8 @@ def main() -> int:
 
     passed = sum(1 for r in rows if r.get("ok"))
     print(f"\n{passed}/{len(rows)} passed (threshold={args.threshold})")
+    if args.braintrust:
+        upload("validate", args.variant, rows, goldens)
     return 0 if passed == len(rows) else 1
 
 

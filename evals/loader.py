@@ -141,16 +141,50 @@ class GoldenTrajectory:
     payment_guards: PaymentGoldGuard
     pay: PaymentGold
     trajectory: TrajectoryGold
+    # When set, this golden encodes the IDEAL behaviour for a case the current
+    # system does NOT yet handle. A score below threshold on such a golden is a
+    # documented known-gap (xfail), not a regression. The string describes the
+    # gap so the report and the interview talking-points write themselves.
+    known_gap: str | None = None
+    # When True, the case needs the LLM ingestion fallback or specialist agents,
+    # so the deterministic_baseline variant skips it.
+    requires_llm: bool = False
 
     def to_dict(self) -> dict:
         return asdict(self)
 
 
-def load_goldens(only: list[str] | None = None) -> list[GoldenTrajectory]:
-    """Load the canonical golden set. Optional ``only`` filters by id."""
+def load_goldens(
+    only: list[str] | None = None,
+    dataset: Literal["core", "adversarial", "all"] = "core",
+) -> list[GoldenTrajectory]:
+    """Load goldens. ``dataset`` selects the canonical 24 ('core'), the 25
+    adversarial stress cases ('adversarial'), or both ('all'). Optional
+    ``only`` filters by id within the selected dataset."""
     from evals.golden_dataset import GOLDENS
+
+    goldens = list(GOLDENS)
+    if dataset in ("adversarial", "all"):
+        from evals.adversarial_goldens import ADVERSARIAL_GOLDENS
+
+        if dataset == "adversarial":
+            goldens = list(ADVERSARIAL_GOLDENS)
+        else:
+            goldens = goldens + list(ADVERSARIAL_GOLDENS)
 
     if only:
         wanted = set(only)
-        return [g for g in GOLDENS if g.id in wanted]
-    return list(GOLDENS)
+        return [g for g in goldens if g.id in wanted]
+    return goldens
+
+
+def classify_row(golden: GoldenTrajectory, ok: bool) -> str:
+    """Map a scored row to one of: 'pass', 'known_gap', 'regression'.
+
+    - pass:       system met the golden's expectation
+    - known_gap:  system diverged AND the golden documents a known limitation
+    - regression: system diverged with no documented gap → a real failure
+    """
+    if ok:
+        return "pass"
+    return "known_gap" if golden.known_gap else "regression"

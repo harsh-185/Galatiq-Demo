@@ -24,6 +24,7 @@ EVAL_MODULES = [
     ("approval", "evals.eval_approval", []),
     ("payment", "evals.eval_payment", ["--include-idempotency"]),
     ("trajectory", "evals.eval_trajectory", []),
+    ("adversarial", "evals.eval_adversarial", []),
 ]
 
 
@@ -50,11 +51,12 @@ def main() -> int:
                 "--variant", variant,
                 *extra_flags,
             ]
-            if args.only:
+            # adversarial uses its own dataset; don't forward core-id --only to it
+            if args.only and label != "adversarial":
                 cmd += ["--only", args.only]
             if args.with_judge and label in {"approval", "trajectory"}:
                 cmd += ["--with-judge"]
-            if args.braintrust and label == "ingest":
+            if args.braintrust:
                 cmd += ["--braintrust"]
             try:
                 result = subprocess.run(cmd, cwd=REPO_ROOT, check=False)

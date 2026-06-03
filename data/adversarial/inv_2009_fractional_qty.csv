@@ -1,0 +1,11 @@
+field,value
+invoice_number,INV-2009
+vendor,Precision Parts Ltd.
+date,2026-02-09
+due_date,2026-03-09
+item,WidgetA
+quantity,2.5
+unit_price,250.00
+subtotal,625.00
+tax,0.00
+total,625.00

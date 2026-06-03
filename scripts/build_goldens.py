@@ -19,13 +19,19 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
+from evals.adversarial_goldens import ADVERSARIAL_GOLDENS  # noqa: E402
 from evals.golden_dataset import GOLDENS  # noqa: E402
 
 SNAPSHOT_PATH = REPO_ROOT / "evals" / "goldens.snapshot.json"
 
+_ALL = list(GOLDENS) + list(ADVERSARIAL_GOLDENS)
+
 
 def _serialize() -> str:
-    payload = [asdict(g) for g in GOLDENS]
+    payload = {
+        "core": [asdict(g) for g in GOLDENS],
+        "adversarial": [asdict(g) for g in ADVERSARIAL_GOLDENS],
+    }
     return json.dumps(payload, indent=2, default=str)
 
 
@@ -44,11 +50,11 @@ def main() -> int:
             print(f"snapshot is stale relative to evals/golden_dataset.py")
             print(f"  run: python scripts/build_goldens.py")
             return 1
-        print(f"snapshot up to date ({len(GOLDENS)} goldens)")
+        print(f"snapshot up to date ({len(_ALL)} goldens)")
         return 0
 
     SNAPSHOT_PATH.write_text(fresh)
-    print(f"wrote {SNAPSHOT_PATH} ({len(GOLDENS)} goldens)")
+    print(f"wrote {SNAPSHOT_PATH} ({len(_ALL)} goldens)")
     return 0
 
 

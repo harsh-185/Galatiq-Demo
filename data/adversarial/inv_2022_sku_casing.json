@@ -1,0 +1,18 @@
+{
+  "invoice_number": "INV-2022",
+  "vendor": "Acme Industrial Supplies",
+  "date": "2026-02-22",
+  "due_date": "2026-03-22",
+  "currency": "USD",
+  "line_items": [
+    {
+      "item": "widgeta",
+      "quantity": 2,
+      "unit_price": 250.0
+    }
+  ],
+  "subtotal": 500.0,
+  "tax_amount": 0.0,
+  "total": 500.0,
+  "payment_terms": "Net 30"
+}

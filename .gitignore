@@ -22,3 +22,5 @@ data/receipts/
 # Eval harness scratch files
 evals.inventory.db
 evals_receipts/
+evals.adversarial.db
+probe.db

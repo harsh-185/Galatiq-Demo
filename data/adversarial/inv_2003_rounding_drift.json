@@ -1,0 +1,18 @@
+{
+  "invoice_number": "INV-2003",
+  "vendor": "Acme Industrial Supplies",
+  "date": "2026-02-03",
+  "due_date": "2026-03-03",
+  "currency": "USD",
+  "line_items": [
+    {
+      "item": "WidgetA",
+      "quantity": 3,
+      "unit_price": 250.33
+    }
+  ],
+  "subtotal": 751.0,
+  "tax_amount": 0.0,
+  "total": 751.0,
+  "payment_terms": "Net 30"
+}
