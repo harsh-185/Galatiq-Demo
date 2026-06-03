@@ -1,0 +1,83 @@
+name: evals
+
+on:
+  pull_request:
+    paths:
+      - "src/**"
+      - "evals/**"
+      - "scripts/**"
+      - "tests/**"
+      - "pyproject.toml"
+  schedule:
+    - cron: "0 6 * * *"  # nightly 06:00 UTC
+  workflow_dispatch:
+
+jobs:
+  # PR gate: fast deterministic subset, no API cost. Fails the PR if any
+  # code-only scorer falls below threshold on the smoke set.
+  smoke-pr:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install --upgrade pip
+      - run: pip install -e ".[dev,eval]"
+      - name: Snapshot freshness gate
+        run: python scripts/build_goldens.py --check
+      - name: Initialise reference DB
+        run: python main.py db-init --fresh
+      - name: Ingest eval (deterministic-format subset)
+        run: |
+          python -m evals.eval_ingest \
+            --variant deterministic_baseline \
+            --only INV-1004,INV-1006,INV-1014,INV-1015
+      - name: Validate eval (rules + verdict)
+        run: |
+          python -m evals.eval_validate \
+            --variant deterministic_baseline \
+            --only INV-1005,INV-1007,INV-1009,INV-1013-JSON,INV-CFO-DEMO
+      - name: Approval eval (decision + safety overrides)
+        run: |
+          python -m evals.eval_approval \
+            --variant deterministic_baseline \
+            --only INV-1004,INV-1005,INV-1014,INV-CFO-DEMO
+      - name: Payment eval (idempotency + guards)
+        run: |
+          python -m evals.eval_payment \
+            --variant deterministic_baseline \
+            --include-idempotency \
+            --only INV-1004,INV-1014,INV-DUPLICATE,INV-NEAR-DUP
+      - name: Trajectory eval
+        run: |
+          python -m evals.eval_trajectory \
+            --variant deterministic_baseline \
+            --only INV-1004,INV-1005,INV-1014,INV-CFO-DEMO,INV-DUPLICATE
+      - name: Adversarial eval (xfail-aware; fails only on undocumented regressions)
+        run: |
+          python -m evals.eval_adversarial --variant deterministic_baseline
+
+  # Nightly: full corpus, all variants, LLM judges on. Uploads to Braintrust.
+  nightly-full:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    env:
+      BRAINTRUST_API_KEY: ${{ secrets.BRAINTRUST_API_KEY }}
+      XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install --upgrade pip
+      - run: pip install -e ".[dev,eval]"
+      - run: python main.py db-init --fresh
+      - name: Full sweep, multiple variants
+        run: |
+          python -m evals.run_all \
+            --variant grok3_full \
+            --variant grok3_mini \
+            --variant deterministic_baseline \
+            --with-judge \
+            --braintrust

@@ -1,0 +1,5 @@
+Invoice Number,Vendor,Date,Due Date,Item,Qty,Unit Price,Line Total
+INV-2020,Reliable Components Inc.,2026-02-20,2026-03-20,WidgetA,6,"1,500.00","9,000.00"
+,,,,,,Subtotal:,"9,000.00"
+,,,,,,Tax (0%):,0.00
+,,,,,,Total:,"9,000.00"

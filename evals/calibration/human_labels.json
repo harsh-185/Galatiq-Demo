@@ -1,0 +1,13 @@
+[
+  {
+    "id": "EXAMPLE-1",
+    "_comment": "Replace this stub with ~30 hand-labeled cases. Each item needs at minimum: narrative + human_label (excellent|good|fair|poor|wrong). Include invoice_summary, engine_decision, opinions, final_decision if the judge needs context to grade fairly.",
+    "narrative": "Auto-approved under TIER-AUTO ($0-10000 USD); USD-equivalent total 1890.00; clean validation and below auto-approve threshold.",
+    "invoice_summary": {"invoice_number": "INV-1004", "vendor": "Precision Parts Ltd.", "total": "1890.00", "currency": "USD"},
+    "final_decision": {"status": "auto_approved", "approver_role": "system", "policy_id": "TIER-AUTO"},
+    "engine_decision": {"status": "auto_approved", "approver_role": "system", "policy_id": "TIER-AUTO"},
+    "opinions": [{"reviewer": "fraud", "verdict": "approve", "severity": "low", "rationale": "no concrete fraud signals"}],
+    "golden_status": "auto_approved",
+    "human_label": "excellent"
+  }
+]

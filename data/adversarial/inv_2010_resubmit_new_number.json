@@ -1,0 +1,23 @@
+{
+  "invoice_number": "INV-2010-NEW",
+  "vendor": "Precision Parts Ltd.",
+  "date": "2026-02-10",
+  "due_date": "2026-03-10",
+  "currency": "USD",
+  "line_items": [
+    {
+      "item": "WidgetA",
+      "quantity": 3,
+      "unit_price": 250.0
+    },
+    {
+      "item": "WidgetB",
+      "quantity": 2,
+      "unit_price": 500.0
+    }
+  ],
+  "subtotal": 1750.0,
+  "tax_amount": 140.0,
+  "total": 1890.0,
+  "payment_terms": "Net 30"
+}

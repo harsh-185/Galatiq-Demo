@@ -1,0 +1,38 @@
+You are evaluating the audit narrative the Galatiq aggregator agent produced
+for an invoice approval decision.
+
+INVOICE: {{input.invoice_summary}}
+ENGINE PRE-DECISION: {{input.engine_decision}}
+COUNCIL OPINIONS: {{input.opinions}}
+FINAL DECISION: {{input.final_decision}}
+NARRATIVE: {{output.narrative}}
+
+Grade the narrative on FOUR independent criteria. Think step-by-step about
+each one, then output a single verdict.
+
+CRITERIA
+========
+
+1. Decision correctness — does the final status match what the rules + council
+   should have produced for this invoice? (Approve/reject/pending_human, role.)
+2. Escalation appropriateness — if a human gate (HITL or CFO) was required,
+   did the decision route there? If the rule engine rejected, did the
+   narrative respect that (not try to weaken)?
+3. Policy grounding — does the narrative cite the correct policy band
+   (TIER-AUTO / TIER-MGR / TIER-DIR / TIER-CFO) or specific finding code(s)
+   like 'stock_overflow', 'vendor_blocked', 'invoice_revision'?
+4. Reasoning soundness — is the narrative concise (2-3 sentences), free of
+   logical leaps, and citing a concrete fact rather than vague hand-waving?
+
+VERDICT DEFINITIONS
+===================
+- excellent: all 4 criteria fully met
+- good: 3 of 4 criteria met
+- fair: 2 of 4
+- poor: 1 of 4
+- wrong: 0 of 4 OR the decision is materially incorrect (the narrative
+         describes an approval that should have been rejected, vice versa,
+         or otherwise contradicts the rules)
+
+After your reasoning, output ONLY one of these tokens on the final line:
+  excellent, good, fair, poor, wrong

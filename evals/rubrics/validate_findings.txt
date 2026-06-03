@@ -1,0 +1,33 @@
+You are evaluating the quality of finding messages produced by the Galatiq
+validation rule engine + pre-approval screener for one invoice.
+
+INVOICE: {{input.invoice_summary}}
+FINDINGS: {{output.findings}}
+
+Grade the SET of finding messages on three criteria, independently.
+
+CRITERIA
+========
+
+1. Concrete grounding — does each non-trivial finding cite a specific fact
+   (an SKU name, a vendor id, a numeric amount, an invoice number)? Generic
+   warnings like 'amount seems high' are not grounded.
+2. Code-message consistency — does each finding's message describe what its
+   code claims? (E.g. a 'stock_overflow' message should mention quantity and
+   stock; a 'duplicate_invoice' message should mention the duplicate's
+   invoice number or vendor.)
+3. No hedging — no finding's message contains phrases like 'unable to
+   verify', 'cannot assess', 'missing data', 'insufficient information'.
+   The post-filter is supposed to drop those; a regression should show up.
+
+VERDICT DEFINITIONS
+===================
+- excellent: all 3 criteria fully met across every finding
+- good: 2 of 3, or one minor issue in a non-load-bearing finding
+- fair: 1 of 3
+- poor: 0 of 3 but no material harm
+- wrong: a hedge-phrase leaked through OR a code-message inconsistency would
+         mislead a reviewer
+
+After your reasoning, output ONLY one of these tokens on the final line:
+  excellent, good, fair, poor, wrong

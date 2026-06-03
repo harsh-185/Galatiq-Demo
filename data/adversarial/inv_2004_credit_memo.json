@@ -1,0 +1,18 @@
+{
+  "invoice_number": "CN-2004",
+  "vendor": "Acme Industrial Supplies",
+  "date": "2026-02-04",
+  "due_date": "2026-03-04",
+  "currency": "USD",
+  "line_items": [
+    {
+      "item": "WidgetA",
+      "quantity": -5,
+      "unit_price": 250.0
+    }
+  ],
+  "subtotal": -1250.0,
+  "tax_amount": 0.0,
+  "total": -1250.0,
+  "payment_terms": "Credit note for returned goods"
+}

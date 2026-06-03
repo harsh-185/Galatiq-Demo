@@ -1,0 +1,18 @@
+{
+  "invoice_number": "INV-2005",
+  "vendor": "Gadgets Co.",
+  "date": "2026-02-05",
+  "due_date": "2026-03-05",
+  "currency": "USD",
+  "line_items": [
+    {
+      "item": "GadgetX",
+      "quantity": 1,
+      "unit_price": 0.0
+    }
+  ],
+  "subtotal": 0.0,
+  "tax_amount": 0.0,
+  "total": 0.0,
+  "payment_terms": "Free sample"
+}
