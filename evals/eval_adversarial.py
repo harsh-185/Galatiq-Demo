@@ -124,6 +124,12 @@ def main() -> int:
         else:
             note = ""
         print(f"{g.id:<12} {marker + ' ' + status:<11} {overall_s:>7}  {note[:78]}")
+        # For regressions, dump the full (untruncated) per-scorer detail so the
+        # divergence is diagnosable without a second run.
+        if status == "regression":
+            for k, sc in (row.get("scores") or {}).items():
+                if sc["score"] < 1.0:
+                    print(f"             └─ {k}: {sc.get('metadata', {})}")
 
     print(
         f"\n{counts['pass']} pass · {counts['known_gap']} known-gap (xfail) · "
